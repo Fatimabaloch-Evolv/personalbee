@@ -5239,7 +5239,7 @@ img { max-width: 100%; display: block; }
 </div>
 
 <script>
-window.PB_BUILD = "2026-08-13 12:10 UTC";
+window.PB_BUILD = "2026-08-13 12:35 UTC";
 
 /* ===== js/core.js ===== */
 try {
@@ -16912,45 +16912,60 @@ try {
       });
     });
 
-    /* 2. Her own reminders. Overdue first, then anything landing this week. */
-    overdueReminders().forEach(function (r, i) {
-      if (!r || !trim(r.text)) return;
-      var due = toDate(r.due);
-      var late = due ? Math.max(0, -daysBetween(n, due)) : 0;
-      out.push({
-        kind: 'reminder', severity: 'late', score: 95 + Math.min(late, 20) - i * 0.1,
-        what: cap(trim(r.text)), phrase: deCap(trim(r.text)),
-        when: due ? (late >= 1 ? 'was due ' + daysAgoPhrase(late) : 'was due ' + fmtRelative(due)) : 'has no time on it',
-        why: 'You asked me to hold that one, and its time has already gone.',
-        due: due, id: r.id
-      });
-    });
+    /* 2. Her own reminders. The three views overlap and each module has its own
+     * idea of "overdue" — take them all, dedupe, and judge by the clock. */
+    var seenRem = {};
+    var remSeq = 0;
 
-    upcomingReminders().forEach(function (r, i) {
+    function pushReminder(r, knownLate) {
       if (!r || !trim(r.text)) return;
+      var id = r.id || trim(r.text);
+      if (seenRem[id]) return;
+      seenRem[id] = 1;
+      var tick = (remSeq++) * 0.01;               // stable order, no real weight
+      var text = cap(trim(r.text));
+
       var due = toDate(r.due);
-      if (!due) return;
+      var snoozed = toDate(r.snoozedUntil);
+      if (snoozed && due && snoozed.getTime() > due.getTime()) due = snoozed;   // she moved it herself
+
+      if (!due) {
+        out.push({
+          kind: 'reminder', severity: 'open', score: 26 - tick,
+          what: text, phrase: text, when: 'no time on it',
+          why: 'Sitting on your list with no date, which is usually how a thing gets lost.',
+          due: null, id: r.id
+        });
+        return;
+      }
+
       var dd = daysBetween(n, due);
-      if (dd > 7) return;
+      if (knownLate || due.getTime() < n.getTime()) {
+        var late = Math.max(0, -dd);
+        out.push({
+          kind: 'reminder', severity: 'late', score: 95 + Math.min(late, 20) - tick,
+          what: text, phrase: text,
+          when: late >= 1 ? 'was due ' + daysAgoPhrase(late) : 'was due ' + fmtRelative(due),
+          why: 'You asked me to hold that one, and its time has already gone.',
+          due: due, id: r.id
+        });
+        return;
+      }
+
+      if (dd > 7) return;                          // still open, not yet a decision
       out.push({
         kind: 'reminder', severity: dd === 0 ? 'today' : 'soon',
-        score: (dd === 0 ? 78 : 62 - dd * 4) - i * 0.1,
-        what: cap(trim(r.text)), phrase: deCap(trim(r.text)),
+        score: (dd === 0 ? 78 : 62 - dd * 4) - tick,
+        what: text, phrase: text,
         when: dd === 0 ? 'due at ' + fmtTime(due) : dueWords(dd, due),
         why: dd === 0 ? 'It\'s on your own list for today.' : 'You put that one on the list yourself.',
         due: due, id: r.id
       });
-    });
+    }
 
-    openReminders().forEach(function (r) {
-      if (!r || !trim(r.text) || r.due) return;
-      out.push({
-        kind: 'reminder', severity: 'open', score: 26,
-        what: cap(trim(r.text)), phrase: deCap(trim(r.text)), when: 'no time set',
-        why: 'Sitting on your list with no date, which is usually how things get lost.',
-        due: null, id: r.id
-      });
-    });
+    overdueReminders().forEach(function (r) { pushReminder(r, true); });
+    upcomingReminders().forEach(function (r) { pushReminder(r, false); });
+    openReminders().forEach(function (r) { pushReminder(r, false); });
 
     /* 3. Standing hand-offs to other people, from the routines BEE has noticed. */
     var routines = (k && isArr(k.routines)) ? k.routines : [];
@@ -17031,9 +17046,10 @@ try {
     }
 
     if (top.kind === 'reminder' && top.severity === 'late') {
-      return 'Honestly? ' + cap(top.phrase) + '. It ' + top.when +
-        ', and it\'s the oldest thing you asked me to hold.' +
-        (lateCount > 1 ? ' It\'s not the only one past its time, but it\'s the one I\'d clear first.' : '');
+      return 'Honestly? ' + cap(top.what) + '. It ' + top.when +
+        (lateCount > 1
+          ? ', and it\'s the oldest of the ' + spell(lateCount) + ' things sitting past their time.'
+          : ', and it\'s the only thing here that\'s actually past its time.');
     }
 
     if (top.kind === 'deliverable') {
@@ -17049,8 +17065,10 @@ try {
     }
 
     if (top.kind === 'reminder') {
-      return 'Do ' + top.phrase + ' first — it\'s ' + top.when +
-        ', and nothing else on here has a real deadline against it.';
+      return 'Honestly? ' + cap(top.what) + '. It\'s ' + top.when +
+        (owedCount
+          ? ', which makes it the only thing here with a clock on it today — everything else is days out.'
+          : ', and nothing else on here has a real deadline against it.');
     }
 
     // Only fixed calendar time left.
@@ -17157,6 +17175,14 @@ try {
   }
 
   function hPriority(text, parsed) {
+    // "What should I do about the Lumea shoot?" is a question about Lumea, not
+    // a request to rank her whole life. Hand it to the brand handler.
+    var e = ents(parsed);
+    if (trim(e.brand) && call(kb(), ['brandFor'], [trim(e.brand)], null)) {
+      var byBrand = hBrandQuery(text, parsed);
+      if (byBrand) return byBrand;
+    }
+
     var items = [];
     try { items = gatherPriorities(); } catch (e) { items = []; }
     if (!items.length) return priorityEmpty();
@@ -17170,12 +17196,17 @@ try {
     // Nothing but calendar time left is still an answer — just a warmer one.
     if (!work.length) {
       var only = events[0];
-      var lines = [
-        'Nothing\'s late and nothing\'s due, so today isn\'t about catching up. ' +
-        'The useful thing is being ready for ' + only.phrase + ' ' + only.when + '.',
-        priorityTodayLine(events, plan)
-      ];
-      return reply(lines.join('\n\n'), priorityChips(only), schedCard('Today', now(), events.map(function (e) { return e.event; })), []);
+      var lines = [];
+      if (events.length === 1) {
+        lines.push('Nothing\'s late and nothing\'s due, so today isn\'t about catching up. The only thing with a ' +
+          'time on it is ' + only.phrase + ' ' + only.when + '. ' + only.why);
+        lines.push('Past that, the day is yours — which doesn\'t happen often.');
+      } else {
+        lines.push('Nothing\'s late and nothing\'s due, so today is about showing up on time rather than catching up.');
+        lines.push(priorityTodayLine(events, plan));
+      }
+      return reply(lines.join('\n\n'), priorityChips(only),
+        schedCard('Today', now(), events.map(function (e) { return e.event; })), []);
     }
 
     var top = work[0];
@@ -18159,7 +18190,9 @@ try {
 
     // A request for judgement. Answering it with a list is the failure this
     // path exists to stop, so it gets rescued before the list intents do.
-    if (/(what|which).{0,24}(should|shall) i (do|start|tackle|focus|work|prioriti[sz]e)/.test(t) ||
+    // Narrow on purpose: "what should I do today" is a priority question,
+    // "what time should I do my skincare" is a question about her routine.
+    if (/\b(?:what|which)(?:\s+\w+){0,3}\s+should i (?:do|start|begin|tackle|focus|work on|prioriti[sz]e)\b(?:\s*(?:today|now|first|next|tonight)\b)?\s*[?.!]*$/.test(t) ||
       /most (productive|important|urgent|pressing)/.test(t) ||
       /what (would|should) you do\b/.test(t) ||
       /where (should|do) i (start|begin)/.test(t) ||
