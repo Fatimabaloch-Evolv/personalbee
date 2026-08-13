@@ -214,6 +214,12 @@ img { max-width: 100%; display: block; }
 }
 .hub-row-quiet { background: none; border-style: dashed; margin-top: 6px; }
 
+.hub-build {
+  margin: 22px 2px 0; text-align: center;
+  font-size: 11.5px; color: var(--text-faint);
+  min-height: 44px; display: flex; align-items: center; justify-content: center;
+}
+
 /* ---------- shared primitives (agents may use these) ---------- */
 
 .wrap { padding: 0 18px; }
@@ -5233,6 +5239,8 @@ img { max-width: 100%; display: block; }
 </div>
 
 <script>
+window.PB_BUILD = "2026-08-13 12:10 UTC";
+
 /* ===== js/core.js ===== */
 try {
 /* Personalbee — core runtime: store, bus, ui, util.
@@ -7658,6 +7666,37 @@ window.PB = window.PB || {};
       [/\bwhat('?s| is)\s+(coming\s+up|after\s+(this|that))\b/i, 2.8],
       [/\bwhere\s+do\s+i\s+need\s+to\s+be\b/i, 2.6]
     ],
+    /* "What should I do?" is a request for a judgement, not a list. It is
+     * deliberately kept apart from schedule.query (which just reads the day
+     * back) and reminder.list (which just reads the list back) — the brain
+     * answers this one with an opinion. */
+    'advice.priority': [
+      [/\b(?:most|more)\s+productive\b/i, 3.4],
+      [/\bproductive\s+(?:thing|use|way|day)\b/i, 3.0],
+      [/\bwhat\s+should\s+i\s+(?:do|be\s+doing|start\s+with|start\s+on|tackle|work\s+on|focus|get\s+done|knock\s+out|prioriti[sz]e)\b/i, 3.2],
+      [/\bwhat\s+would\s+you\s+do\b/i, 3.2],
+      [/\bwhat\s+do\s+you\s+(?:suggest|recommend|reckon|think\s+i\s+should)\b/i, 3.0],
+      [/\bwhat(?:'?s| is)\s+(?:the\s+)?most\s+important\b/i, 3.2],
+      [/\bmost\s+important\s+thing\b/i, 3.0],
+      [/\bwhat\s+matters\s+(?:the\s+)?(?:most|more)\b/i, 3.2],
+      [/\bwhat(?:'?s| is)\s+(?:the\s+)?(?:most\s+)?(?:urgent|pressing)\b/i, 3.0],
+      [/\bwhat(?:'?s| is)\s+(?:my\s+|the\s+)?(?:top\s+|biggest\s+|first\s+)?priority\b/i, 3.2],
+      [/\bhelp\s+me\s+(?:plan|prioriti[sz]e|organi[sz]e|figure\s+out|get\s+through)\b/i, 3.0],
+      [/\bplan\s+(?:out\s+)?(?:my|the)\s+(?:day|week|morning|afternoon|evening)\b/i, 3.0],
+      [/\bwhat\s+do\s+i\s+need\s+to\s+(?:get\s+done|finish|tackle|handle|deal\s+with|knock\s+out)\b/i, 3.2],
+      // "what do I need to do" reads as a list request, but an empty list is a
+      // useless answer to it — rank it as a judgement and let the brain decide.
+      [/\bwhat\s+do\s+i\s+(?:actually\s+)?need\s+to\s+do\b/i, 3.0],
+      [/\b(?:am\s+i|are\s+we)\s+forgetting\s+(?:anything|something)\b/i, 3.2],
+      [/\bwhat\s+am\s+i\s+forgetting\b/i, 2.6],
+      [/\banything\s+(?:i'?m\s+)?(?:missing|forgetting|slipping|overdue|late)\b/i, 2.6],
+      [/\bwhere\s+(?:should|do|would)\s+i\s+(?:start|begin)\b/i, 3.2],
+      [/\bbest\s+use\s+of\s+my\s+(?:time|day)\b/i, 3.2],
+      [/\bwhat(?:'?s| is)\s+(?:the\s+)?(?:one\s+)?thing\s+i\s+should\b/i, 3.0],
+      [/\bwhat\s+needs\s+(?:doing|my\s+attention|to\s+happen)\b/i, 3.0],
+      [/\b(?:focus|start)\s+on\s+(?:today|first|now)\b/i, 2.0],
+      [/\bprioriti[sz]e\b/i, 2.0]
+    ],
     'contact.find': [
       [/\bwho\s+(is|are|was)\b/i, 3],
       [/\bwho('?s)\s+/i, 2.4],
@@ -7776,6 +7815,12 @@ window.PB = window.PB || {};
     if (scores['reminder.snooze'] && scores['reminder.create'] &&
       !/\b(snooze|push\s+(it|that)|move\s+(it|that)|not\s+now|later)\b/i.test(text)) {
       delete scores['reminder.snooze'];
+    }
+    // "What should I do today?" names the day, so schedule.query fires too.
+    // Reading the calendar back at her is exactly the wrong answer to a
+    // request for judgement — when both fire, judgement wins.
+    if (scores['advice.priority'] && (scores['schedule.query'] || scores['reminder.list'])) {
+      scores['advice.priority'] += 1.0;
     }
     // a bare "who is X" beats brand keywords
     if (scores['contact.find'] && scores['brand.query'] && /\bwho\s+is\b/i.test(text)) {
@@ -8017,6 +8062,10 @@ window.PB = window.PB || {};
       return null;
     }
 
+    // Asking "what should I do?" and getting a question back is the one
+    // failure this intent exists to prevent. It never clarifies.
+    if (intent === 'advice.priority') return null;
+
     if (intent === 'reminder.snooze' && !dt.date) {
       return 'How long should I push it — 10 minutes, an hour, tomorrow?';
     }
@@ -8098,7 +8147,8 @@ window.PB = window.PB || {};
       var timeful = (intent === 'reminder.create' || intent === 'reminder.snooze' ||
         intent === 'schedule.query' || intent === 'schedule.next' ||
         intent === 'reminder.list' || intent === 'photo.recall' ||
-        intent === 'photo.note' || intent === 'unknown');
+        intent === 'photo.note' || intent === 'advice.priority' ||
+        intent === 'unknown');
       if (timeful || dt.recurrence) {
         entities.datetime = dt.date ? dt.date.toISOString() : null;
         entities.datetimeText = dt.text;
@@ -8241,6 +8291,25 @@ window.PB = window.PB || {};
         { t: 'what does my day look like', i: 'schedule.query' },
         { t: 'am i free friday', i: 'schedule.query' },
         { t: 'what\'s next', i: 'schedule.next' },
+        // --- advice.priority: asks for a judgement, not a read-back ---
+        { t: 'what is the most productive thing i can do today', i: 'advice.priority', clarify: false },
+        { t: 'what should I do today', i: 'advice.priority', clarify: false },
+        { t: 'what should I focus on', i: 'advice.priority', clarify: false },
+        { t: 'what\'s most important', i: 'advice.priority', clarify: false },
+        { t: 'what matters most right now', i: 'advice.priority', clarify: false },
+        { t: 'help me plan my day', i: 'advice.priority', clarify: false },
+        { t: 'what do I need to get done', i: 'advice.priority', clarify: false },
+        { t: 'where should I start', i: 'advice.priority', clarify: false },
+        { t: 'what\'s urgent', i: 'advice.priority', clarify: false },
+        { t: 'am I forgetting anything', i: 'advice.priority', clarify: false },
+        { t: 'what would you do', i: 'advice.priority', clarify: false },
+        { t: 'what\'s my top priority', i: 'advice.priority', clarify: false },
+        { t: 'what should i work on first', i: 'advice.priority', clarify: false },
+        { t: 'what needs doing', i: 'advice.priority', clarify: false },
+        { t: 'best use of my time today', i: 'advice.priority', clarify: false },
+        // ...and the neighbours it must not swallow
+        { t: 'what\'s on my calendar today', i: 'schedule.query' },
+        { t: 'show me my reminders', i: 'reminder.list' },
         { t: 'who is priya', i: 'contact.find' },
         { t: 'where did i meet jordan', i: 'contact.find' },
         { t: 'what deliverables do i owe glossier', i: 'brand.query' },
@@ -8303,7 +8372,7 @@ window.PB = window.PB || {};
     test: test,
     INTENTS: ['reminder.create', 'reminder.list', 'reminder.complete', 'reminder.snooze',
       'photo.note', 'photo.recall', 'schedule.query', 'schedule.next',
-      'contact.find', 'brand.query', 'memory.recall', 'memory.forget',
+      'advice.priority', 'contact.find', 'brand.query', 'memory.recall', 'memory.forget',
       'trust.query', 'capability.query', 'smalltalk', 'gratitude', 'unknown']
   };
 })();
@@ -16660,6 +16729,477 @@ try {
       ], null, []);
   }
 
+  /* ------------------------------------------------------------------ *
+   * advice.priority — "what should I do today?"
+   *
+   * The question a personal assistant actually exists for. Reading the
+   * calendar back is not an answer to it, and neither is a clarifying
+   * question. Everything here is computed from what BEE already holds and
+   * ranked by consequence: late and owed to another person beats not-yet-due
+   * beats routine beats fixed-time. The reasoning is the value, so every
+   * item carries its own "why" and the copy says it out loud.
+   * ------------------------------------------------------------------ */
+
+  var DAY_MS = 86400000;
+
+  /* Whole calendar days apart. A deliverable due at 23:59 tonight is "today",
+   * not "in 0.6 days" — the clock is the wrong unit for a deadline. */
+  function daysBetween(from, to) {
+    var a = startOfDay(from), b = startOfDay(to);
+    return Math.round((b.getTime() - a.getTime()) / DAY_MS);
+  }
+
+  var NUM_WORD = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+    'eight', 'nine', 'ten'];
+
+  function spell(n) {
+    n = Math.abs(Math.round(n));
+    return n < NUM_WORD.length ? NUM_WORD[n] : String(n);
+  }
+
+  function daysAgoPhrase(n) {
+    if (n <= 0) return 'earlier today';
+    if (n === 1) return 'yesterday';
+    return spell(n) + ' days ago';
+  }
+
+  /* "due Sunday" reads better than "due Sun 16 Aug" inside a sentence. */
+  function dueWords(days, d) {
+    if (days < 0) return 'was due ' + daysAgoPhrase(-days);
+    if (days === 0) return 'due today';
+    if (days === 1) return 'due tomorrow';
+    if (days <= 6) return 'due ' + DAY_NAMES[d.getDay()];
+    return 'due ' + fmtDay(d);
+  }
+
+  function whenWords(days, d) {
+    if (days === 0) return 'today at ' + fmtTime(d);
+    if (days === 1) return 'tomorrow at ' + fmtTime(d);
+    if (days <= 6) return DAY_NAMES[d.getDay()] + ' at ' + fmtTime(d);
+    return fmtDay(d) + ' at ' + fmtTime(d);
+  }
+
+  /* "1 long-form GRWM featuring the Rewind serum" -> "long-form GRWM".
+   * A deliverable line in a contract is not a sentence; trim it to the thing. */
+  function deliverableCore(what) {
+    var s = trim(what);
+    if (!s) return '';
+    s = s.replace(/^1\s+(?=[A-Za-z])/, '');
+    s = s.split(/\s+(?:featuring|using|with|for|from|about)\s+/i)[0];
+    s = s.split(/\s*[:(]/)[0];
+    s = trim(s).replace(/[\s,;.]+$/, '');
+    if (s.length > 54) s = trim(s.slice(0, 54)).replace(/\s+\S*$/, '') + '…';
+    return trim(s);
+  }
+
+  function deliverablePhrase(brandName, what) {
+    var core = deliverableCore(what);
+    var b = trim(brandName);
+    if (!core) return b ? 'the ' + b + ' deliverable' : 'that deliverable';
+    if (/^\d/.test(core)) return core + (b ? ' for ' + b : '');
+    return (b ? 'the ' + b + ' ' : 'the ') + deCap(core);
+  }
+
+  function contactNameById(id) {
+    if (!id) return '';
+    var contacts = (kb() && isArr(kb().contacts)) ? kb().contacts : [];
+    for (var i = 0; i < contacts.length; i++) {
+      if (contacts[i] && contacts[i].id === id) {
+        return firstName(contacts[i].name) || trim(contacts[i].name);
+      }
+    }
+    return '';
+  }
+
+  /* A routine that hands something to a named person is an obligation, not a
+   * habit. If it slips, it slips for them too — that's what makes it rank. */
+  /* Deliberately case-sensitive on the name: "to Tomás" is an obligation,
+   * "to bed" is not. The verbs carry both cases instead of an /i flag. */
+  var OBLIGATION_RE =
+    /\b(?:[Ss]ends?|[Dd]elivers?|[Dd]rops?\s+off|[Gg]ives?|[Ss]ubmits?|[Hh]ands?\s+(?:off|over))\s+(?:the\s+|her\s+|his\s+|my\s+)?([\w'’-]+(?:\s+[\w'’-]+){0,2}?)\s+(?:off\s+to|over\s+to|to)\s+([A-Z][\wÀ-ÿ'’-]+)/;
+
+  function nextRoutineDate(r) {
+    var days = arr(r && r.days).filter(function (d) {
+      return typeof d === 'number' && d >= 0 && d <= 6;
+    });
+    if (!days.length) return null;
+    var m = trim(r && r.time).match(/^(\d{1,2}):(\d{2})/);
+    var hh = m ? parseInt(m[1], 10) : 9;
+    var mm = m ? parseInt(m[2], 10) : 0;
+    if (isNaN(hh)) hh = 9;
+    if (isNaN(mm)) mm = 0;
+    var n = now();
+    for (var i = 0; i < 8; i++) {
+      var d = new Date(startOfDay(n).getTime() + i * DAY_MS);
+      d.setHours(hh, mm, 0, 0);
+      if (days.indexOf(d.getDay()) === -1) continue;
+      if (d.getTime() <= n.getTime()) continue;
+      return d;
+    }
+    return null;
+  }
+
+  /* "Sable & Ash — sample pickup" -> "Sable & Ash sample pickup", without
+   * eating the hyphen out of "drop-off". */
+  function cleanTitle(s) {
+    return trim(String(s || '').replace(/\s+[—–-]\s+/g, ' ')).replace(/\s{2,}/g, ' ');
+  }
+
+  /* Signed, paid work outranks an unanswered pitch or a deal the brand has
+   * put on ice. Same date, different consequence. */
+  function statusWeight(status) {
+    if (status === 'pitched') return -6;
+    if (status === 'paused') return -4;
+    if (status === 'delivered') return -8;
+    return 6;                                   // active, or unlabelled
+  }
+
+  /* Everything BEE could reasonably think she should be doing, scored. */
+  function gatherPriorities() {
+    var out = [];
+    var n = now();
+    var k = kb();
+
+    /* 1. Brand deliverables — the only work here with someone else's name on it. */
+    var brands = (k && isArr(k.brands)) ? k.brands : [];
+    brands.forEach(function (b) {
+      if (!b) return;
+      var status = low(b.status);
+      var owedTo = contactNameById(b.contactId);
+      arr(b.deliverables).forEach(function (d) {
+        if (!d || d.done) return;
+        var phrase = deliverablePhrase(b.name, d.what);
+        var label = trim(b.name) + ' — ' + (deliverableCore(d.what) || trim(d.what));
+        var due = toDate(d.dueDate);
+
+        var w = statusWeight(status);
+
+        if (!due) {
+          out.push({
+            kind: 'deliverable', severity: 'open', score: 30 + w,
+            what: label, phrase: phrase, when: 'no date on it',
+            why: 'Still open for ' + trim(b.name) + ', with no date on it — which is usually how a thing gets forgotten.',
+            due: null, owedTo: owedTo, status: status, id: b.id
+          });
+          return;
+        }
+
+        var dd = daysBetween(n, due);
+        if (due.getTime() < n.getTime()) {
+          var late = Math.max(0, -dd);
+          out.push({
+            kind: 'deliverable', severity: 'late', score: 120 + Math.min(late, 40) + w,
+            what: label, phrase: phrase, when: 'was due ' + daysAgoPhrase(late),
+            why: (owedTo ? owedTo + ' is on the other end of it, and it\'s already past.'
+              : 'It\'s owed to a brand, and it\'s already past.') +
+              ' Late and owed to someone else is the worst combination on this list.',
+            due: due, lateDays: late, owedTo: owedTo, status: status, id: b.id
+          });
+          return;
+        }
+
+        if (dd > 21) return;                       // too far out to be today's problem
+        out.push({
+          kind: 'deliverable', severity: dd === 0 ? 'today' : 'soon',
+          score: (dd === 0 ? 82 : (74 - Math.min(dd, 21) * 2)) + w,
+          what: label, phrase: phrase, when: dueWords(dd, due),
+          why: (dd === 0 ? 'It lands tonight and it isn\'t marked done. '
+            : (status === 'pitched' ? 'It\'s a pitch, not signed work, so it costs you least if it moves. '
+              : (status === 'paused' ? 'That deal is paused on their side, so it may not be as urgent as the date. ' : ''))) +
+            (owedTo ? owedTo + ' is the one waiting on it.' : 'Nobody\'s chasing you for it yet.'),
+          due: due, daysOut: dd, owedTo: owedTo, status: status, id: b.id
+        });
+      });
+    });
+
+    /* 2. Her own reminders. Overdue first, then anything landing this week. */
+    overdueReminders().forEach(function (r, i) {
+      if (!r || !trim(r.text)) return;
+      var due = toDate(r.due);
+      var late = due ? Math.max(0, -daysBetween(n, due)) : 0;
+      out.push({
+        kind: 'reminder', severity: 'late', score: 95 + Math.min(late, 20) - i * 0.1,
+        what: cap(trim(r.text)), phrase: deCap(trim(r.text)),
+        when: due ? (late >= 1 ? 'was due ' + daysAgoPhrase(late) : 'was due ' + fmtRelative(due)) : 'has no time on it',
+        why: 'You asked me to hold that one, and its time has already gone.',
+        due: due, id: r.id
+      });
+    });
+
+    upcomingReminders().forEach(function (r, i) {
+      if (!r || !trim(r.text)) return;
+      var due = toDate(r.due);
+      if (!due) return;
+      var dd = daysBetween(n, due);
+      if (dd > 7) return;
+      out.push({
+        kind: 'reminder', severity: dd === 0 ? 'today' : 'soon',
+        score: (dd === 0 ? 78 : 62 - dd * 4) - i * 0.1,
+        what: cap(trim(r.text)), phrase: deCap(trim(r.text)),
+        when: dd === 0 ? 'due at ' + fmtTime(due) : dueWords(dd, due),
+        why: dd === 0 ? 'It\'s on your own list for today.' : 'You put that one on the list yourself.',
+        due: due, id: r.id
+      });
+    });
+
+    openReminders().forEach(function (r) {
+      if (!r || !trim(r.text) || r.due) return;
+      out.push({
+        kind: 'reminder', severity: 'open', score: 26,
+        what: cap(trim(r.text)), phrase: deCap(trim(r.text)), when: 'no time set',
+        why: 'Sitting on your list with no date, which is usually how things get lost.',
+        due: null, id: r.id
+      });
+    });
+
+    /* 3. Standing hand-offs to other people, from the routines BEE has noticed. */
+    var routines = (k && isArr(k.routines)) ? k.routines : [];
+    routines.forEach(function (r) {
+      if (!r || !trim(r.label)) return;
+      var m = OBLIGATION_RE.exec(trim(r.label));
+      if (!m) return;
+      var thing = trim(m[1]);
+      var who = trim(m[2]);
+      var when = nextRoutineDate(r);
+      if (!when || !thing || !who) return;
+      var dd = daysBetween(n, when);
+      if (dd > 7) return;
+      var soft = typeof r.confidence === 'number' && r.confidence < 0.7;
+      out.push({
+        kind: 'obligation', severity: 'standing', score: 58 - dd * 3,
+        what: cap(thing) + ' to ' + who,
+        phrase: thing + ' to ' + who,
+        when: whenWords(dd, when).replace(' at 12:00 PM', ' around noon'),
+        why: 'It\'s a hand-off — if it slips, it slips for them too, not just you.' +
+          (soft ? ' I\'ve only seen that pattern a handful of times, so treat the timing as a guess.' : ''),
+        due: when, person: who, id: r.id
+      });
+    });
+
+    /* 4. What's actually pinned to the clock today. */
+    var todays = eventsOn(n).filter(function (e) {
+      var s = toDate(e && e.start);
+      return s && s.getTime() >= n.getTime();
+    });
+    var plan = null;
+    try { plan = departurePlan(); } catch (e) { plan = null; }
+    todays.forEach(function (ev, i) {
+      var s = toDate(ev.start);
+      var leaving = plan && plan.event && plan.event === ev;
+      out.push({
+        kind: 'event', severity: 'fixed', score: (leaving ? 46 : 34) - i * 2,
+        what: cleanTitle(ev.title) || 'Something on the calendar',
+        phrase: cleanTitle(ev.title) || 'that',
+        when: 'at ' + fmtTime(s),
+        why: leaving ? 'Fixed time, and you\'d need to leave by ' + fmtTime(plan.leaveAt) + ' to make it.'
+          : (trim(ev.location) ? 'Fixed time, and it\'s at ' + trim(ev.location) + '.'
+            : 'Fixed time — nothing to decide, just be there.'),
+        due: s, id: ev.id, event: ev
+      });
+    });
+
+    out.sort(function (a, b) { return b.score - a.score; });
+    return out;
+  }
+
+  function countBy(items, fn) {
+    var c = 0;
+    arr(items).forEach(function (x) { if (fn(x)) c++; });
+    return c;
+  }
+
+  /* The one-sentence recommendation. It always commits. */
+  function priorityLead(top, items) {
+    var lateCount = countBy(items, function (x) { return x.severity === 'late'; });
+    var owedCount = countBy(items, function (x) {
+      return (x.kind === 'deliverable' || x.kind === 'obligation') && x.severity !== 'fixed';
+    });
+
+    if (top.kind === 'deliverable' && top.severity === 'late') {
+      var s = 'Honestly? ' + cap(top.phrase) + '. It ' + top.when +
+        (lateCount === 1
+          ? ', and it\'s the only thing here that\'s actually late.'
+          : ', and of the ' + spell(lateCount) + ' things past their date it\'s the furthest gone.');
+      if (top.status === 'paused' || top.status === 'pitched') {
+        s += ' Their side is ' + (top.status === 'paused' ? 'paused' : 'still unsigned') +
+          ', so it may not be as loud as the date makes it look' +
+          (top.owedTo ? ' — one message to ' + top.owedTo + ' settles whether it still lands.' : '.');
+      } else if (top.owedTo) {
+        s += ' ' + top.owedTo + ' is waiting on it.';
+      }
+      return s;
+    }
+
+    if (top.kind === 'reminder' && top.severity === 'late') {
+      return 'Honestly? ' + cap(top.phrase) + '. It ' + top.when +
+        ', and it\'s the oldest thing you asked me to hold.' +
+        (lateCount > 1 ? ' It\'s not the only one past its time, but it\'s the one I\'d clear first.' : '');
+    }
+
+    if (top.kind === 'deliverable') {
+      return 'Start with ' + top.phrase + '. It\'s ' + top.when +
+        (owedCount === 1 ? ', and it\'s the only thing on here someone else is waiting on.'
+          : (top.owedTo ? ', and ' + top.owedTo + ' is the one waiting.' : ', and it\'s the closest real deadline you have.')) +
+        ' Nothing\'s actually late yet, which is worth keeping true.';
+    }
+
+    if (top.kind === 'obligation') {
+      return 'Start with ' + top.phrase + '. ' + top.person + ' needs it ' + top.when +
+        ', and it\'s the only thing here that holds someone else up.';
+    }
+
+    if (top.kind === 'reminder') {
+      return 'Do ' + top.phrase + ' first — it\'s ' + top.when +
+        ', and nothing else on here has a real deadline against it.';
+    }
+
+    // Only fixed calendar time left.
+    return 'Nothing\'s late and nothing\'s due, so the honest answer is: be ready for ' +
+      top.phrase + ' ' + top.when + '. ' + top.why;
+  }
+
+  /* Three rows of the same brand table is a report, not advice. Prefer a
+   * different kind of thing for each runner-up, then fill by score. */
+  function pickRunners(pool, want, lead) {
+    var out = [];
+    var seenKind = {}, seenId = {};
+    if (lead) { seenKind[lead.kind] = 1; seenId[lead.kind + ':' + lead.id] = 1; }
+
+    function key(it) { return it.kind + ':' + (it.id || it.what); }
+
+    pool.forEach(function (it) {
+      if (out.length >= want) return;
+      if (seenKind[it.kind] || seenId[key(it)]) return;
+      out.push(it);
+      seenKind[it.kind] = 1;
+      seenId[key(it)] = 1;
+    });
+    pool.forEach(function (it) {
+      if (out.length >= want) return;
+      if (seenId[key(it)] || out.indexOf(it) !== -1) return;
+      out.push(it);
+      seenId[key(it)] = 1;
+    });
+    out.sort(function (a, b) { return b.score - a.score; });
+    return out;
+  }
+
+  /* The runners-up, each carrying the reason it ranks where it does. */
+  function priorityRunners(rest) {
+    if (!rest.length) return '';
+    var lines = ['After that:'];
+    rest.forEach(function (it) {
+      lines.push('· ' + cap(it.phrase) + ' — ' + it.when + '. ' + trim(it.why));
+    });
+    return lines.join('\n');
+  }
+
+  function priorityTodayLine(events, plan) {
+    if (!events.length) {
+      return 'Today itself is empty — nothing fixed on the calendar, so the time is yours.';
+    }
+    var bits = events.slice(0, 3).map(function (it) {
+      return it.phrase + ' ' + it.when;
+    });
+    var line;
+    if (events.length === 1) {
+      line = 'Today itself is light — ' + bits[0] + ' is the only fixed thing.';
+    } else {
+      line = 'Today itself: ' + joinList(bits, 'and') + '.';
+      if (events.length > 3) line = line.replace(/\.$/, ', plus ' + (events.length - 3) + ' more.');
+    }
+    if (plan) {
+      line += plan.leaveIn <= 0
+        ? ' Which means leaving about now to make the ' +
+          fmtTime(plan.start).replace(/:00(?=\s?[AP]M)/, '').replace(/\s?[AP]M$/, '') +
+          ' — flat travel estimate, no live traffic.'
+        : ' You\'d want to be out of the door by ' + fmtTime(plan.leaveAt) + ' for that one.';
+    }
+    return line;
+  }
+
+  function priorityChips(top) {
+    var chips = [];
+    if (top && (top.kind === 'deliverable' || top.kind === 'obligation')) {
+      chips.push({ label: 'Remind me about it', send: 'Remind me to finish ' + top.phrase + ' tomorrow at 10am' });
+    } else if (top && top.kind === 'reminder') {
+      chips.push({ label: 'Mark it done', send: 'done with ' + top.what });
+    }
+    chips.push({ label: 'What\'s outstanding?', send: 'What brand work is outstanding?' });
+    chips.push({ label: 'What\'s on today?', send: 'What\'s on today?' });
+    return chips;
+  }
+
+  function priorityEmpty() {
+    var hasKB = !!(kb() && (arr(kb().calendar).length || arr(kb().brands).length));
+    if (hasKB) {
+      return reply(
+        'Genuinely nothing pressing. Nothing late, nothing due in the next few days, and your list is clear.\n' +
+        'That\'s not me missing something — it\'s a rare clean day. I\'d spend it on the thing you keep putting off, ' +
+        'or on nothing at all.',
+        [
+          { label: 'What\'s on today?', send: 'What\'s on today?' },
+          { label: 'What\'s outstanding?', send: 'What brand work is outstanding?' }
+        ],
+        null, []
+      );
+    }
+    return reply(
+      'I\'ll be straight with you: I have nothing to go on yet. No calendar, no deadlines, nothing on your list — ' +
+      'so anything I picked would be me guessing at your life.\n' +
+      'Tell me one thing that\'s hanging over you and I\'ll hold it. From there I can actually rank them.',
+      [
+        { label: 'Hold something for me', send: 'Remind me to ' },
+        { label: 'What can you do?', send: 'What can you do?' }
+      ],
+      null, []
+    );
+  }
+
+  function hPriority(text, parsed) {
+    var items = [];
+    try { items = gatherPriorities(); } catch (e) { items = []; }
+    if (!items.length) return priorityEmpty();
+
+    var events = items.filter(function (x) { return x.severity === 'fixed'; });
+    var work = items.filter(function (x) { return x.severity !== 'fixed'; });
+
+    var plan = null;
+    try { plan = departurePlan(); } catch (e) { plan = null; }
+
+    // Nothing but calendar time left is still an answer — just a warmer one.
+    if (!work.length) {
+      var only = events[0];
+      var lines = [
+        'Nothing\'s late and nothing\'s due, so today isn\'t about catching up. ' +
+        'The useful thing is being ready for ' + only.phrase + ' ' + only.when + '.',
+        priorityTodayLine(events, plan)
+      ];
+      return reply(lines.join('\n\n'), priorityChips(only), schedCard('Today', now(), events.map(function (e) { return e.event; })), []);
+    }
+
+    var top = work[0];
+    var rest = pickRunners(work.slice(1), 2, top);
+    var out = [priorityLead(top, work)];
+
+    var runners = priorityRunners(rest);
+    if (runners) out.push(runners);
+
+    out.push(priorityTodayLine(events, plan));
+
+    // Honest about a thin picture rather than dressing it up as a plan.
+    if (work.length === 1 && !events.length) {
+      out.push('That\'s the whole picture I have, which is thin — if something bigger is hanging over you, tell me and I\'ll hold it.');
+    }
+
+    return reply(
+      out.join('\n\n'),
+      priorityChips(top),
+      events.length ? schedCard('Today', now(), events.map(function (e) { return e.event; })) : null,
+      []
+    );
+  }
+
   /* --- memory.recall / forget ---------------------------------------- */
 
   function memCard(items, note) {
@@ -17617,6 +18157,18 @@ try {
       /(delete|erase|wipe) (everything|it all|my data)/.test(t) ||
       /(offline|airplane mode)/.test(t)) return 'trust.query';
 
+    // A request for judgement. Answering it with a list is the failure this
+    // path exists to stop, so it gets rescued before the list intents do.
+    if (/(what|which).{0,24}(should|shall) i (do|start|tackle|focus|work|prioriti[sz]e)/.test(t) ||
+      /most (productive|important|urgent|pressing)/.test(t) ||
+      /what (would|should) you do\b/.test(t) ||
+      /where (should|do) i (start|begin)/.test(t) ||
+      /what (matters|needs doing|needs my attention)/.test(t) ||
+      /\b(top |biggest |first )?priorit(y|ies|ise|ize)\b/.test(t) ||
+      /help me (plan|prioriti[sz]e|organi[sz]e) (my|the)/.test(t) ||
+      /(am i|are we) forgetting (anything|something)/.test(t) ||
+      /best use of my (time|day)/.test(t)) return 'advice.priority';
+
     if (/what can you (do|help)|what are you (for|good at)|how do i use you|what do you do\b|help me out|your (features|abilities)/.test(t)) return 'capability.query';
     if (/^(remind|remember to)\b|don'?t let me forget/.test(t)) return 'reminder.create';
     if (/(what|anything).*(reminder|on my list|to do|todo)/.test(t)) return 'reminder.list';
@@ -17674,6 +18226,7 @@ try {
       case 'reminder.snooze': return hReminderSnooze(text, parsed);
       case 'schedule.query': return hScheduleQuery(text, parsed);
       case 'schedule.next': return hScheduleNext(text, parsed);
+      case 'advice.priority': return hPriority(text, parsed);
       case 'contact.find': return hContactFind(text, parsed);
       case 'brand.query': return hBrandQuery(text, parsed);
       case 'memory.recall': return answerFromMemory(text, parsed) || hMemoryRecall(text, parsed);
@@ -17810,6 +18363,21 @@ try {
           }).join('; ') : ' nothing outstanding');
       });
       if (rows.length) out.push('BRAND WORK: ' + rows.join(' | '));
+    }
+
+    // The local ranking. If this ever goes to Claude, it must not re-derive the
+    // order — the deterministic answer is the one that has to be right.
+    if (intent === 'advice.priority') {
+      var ranked = [];
+      try { ranked = gatherPriorities(); } catch (e) { ranked = []; }
+      if (ranked.length) {
+        out.push('BEE\'S RANKING (already worked out locally — keep this order and these reasons):\n' +
+          ranked.slice(0, 6).map(function (it, i) {
+            return (i + 1) + '. ' + it.what + ' — ' + it.when + ' [' + it.severity + '] — ' + it.why;
+          }).join('\n'));
+      } else {
+        out.push('BEE\'S RANKING: nothing to rank. Say so plainly and offer to start holding things.');
+      }
     }
 
     // Preferences
@@ -18300,7 +18868,8 @@ try {
   /* Pure commands: don't try to mine facts out of them. */
   var NO_LEARN = {
     'reminder.complete': 1, 'reminder.snooze': 1, 'reminder.list': 1,
-    'memory.forget': 1, 'trust.query': 1, 'capability.query': 1, 'gratitude': 1
+    'memory.forget': 1, 'trust.query': 1, 'capability.query': 1, 'gratitude': 1,
+    'advice.priority': 1
   };
 
   function prepend(line, r) {
@@ -18466,6 +19035,28 @@ try {
     greeting: function () {
       try { return greetingText(); }
       catch (e) { return 'I\'m here.'; }
+    },
+
+    /* The ranked answer to "what should I do?", as data, so the Today screen
+     * and anything else can reuse it without re-deriving the judgement.
+     * -> [{ what, why, when, severity, score, kind, phrase, due, id }]
+     * severity: 'late' | 'today' | 'soon' | 'standing' | 'open' | 'fixed'. */
+    priorities: function () {
+      try {
+        return gatherPriorities().map(function (it) {
+          return {
+            what: it.what,
+            why: it.why,
+            when: it.when,
+            severity: it.severity,
+            score: Math.round(it.score * 10) / 10,
+            kind: it.kind,
+            phrase: it.phrase,
+            due: it.due ? iso(it.due) : null,
+            id: it.id || null
+          };
+        });
+      } catch (e) { return []; }
     },
 
     /* A proactive message with no user turn — or null if there's nothing
@@ -22883,7 +23474,111 @@ try {
     });
     body.appendChild(who);
 
+    // Open-ended questions ("what should I focus on?") are where the on-device rules
+    // engine runs out. This is the switch that sends only those to Claude; reminders,
+    // memory and anything privacy-critical stay local either way.
+    var brainRow = PB.ui.el('button', 'hub-row hub-row-quiet');
+    brainRow.appendChild(PB.ui.el('span', 'hub-ico', '💬'));
+    var bmid = PB.ui.el('span', 'hub-mid');
+    bmid.appendChild(PB.ui.el('span', 'hub-title', 'How BEE thinks'));
+    var st = { cloud: false, reason: '' };
+    try { if (PB.brain && PB.brain.status) st = PB.brain.status() || st; } catch (e) {}
+    bmid.appendChild(PB.ui.el('span', 'hub-line', st.cloud
+      ? 'Open questions go to Claude. Reminders and memory stay on this phone.'
+      : 'Running entirely on this phone. Add a Claude key for open-ended conversation.'));
+    brainRow.appendChild(bmid);
+    brainRow.addEventListener('click', openBrainSheet);
+    body.appendChild(brainRow);
+
+    // Which build is this phone actually running? Without this, "is it fixed yet?" is
+    // unanswerable — a home-screen app can sit on a cached copy without saying so.
+    if (window.PB_BUILD) {
+      var stamp = PB.ui.el('p', 'hub-build', 'Build ' + window.PB_BUILD);
+      var tapped = 0;
+      stamp.addEventListener('click', function () {
+        if (++tapped < 3) return;
+        tapped = 0;
+        reloadFresh();
+      });
+      body.appendChild(stamp);
+    }
+
     root.appendChild(body);
+  }
+
+  function openBrainSheet() {
+    if (!PB.brain || typeof PB.brain.setKey !== 'function') {
+      PB.ui.toast('Not available in this build.');
+      return;
+    }
+    var has = false;
+    try { has = !!PB.brain.hasKey(); } catch (e) {}
+
+    var wrap = PB.ui.el('div');
+    wrap.appendChild(PB.ui.el('p', 'dim small',
+      'Reminders, memory, your photos and everything on the Privacy screen are worked out ' +
+      'on this phone and never leave it. That does not change.'));
+    var p2 = PB.ui.el('p', 'dim small',
+      'What a key changes: open-ended questions — "what should I focus on?", "help me think ' +
+      'this through" — get answered by Claude instead of by rules. Only the question and the ' +
+      'relevant context are sent, and only for those turns.');
+    p2.style.marginTop = '10px';
+    wrap.appendChild(p2);
+
+    var input = PB.ui.el('input');
+    input.type = 'password';
+    input.placeholder = has ? 'A key is saved — paste a new one to replace it' : 'sk-ant-…';
+    input.setAttribute('autocapitalize', 'off');
+    input.setAttribute('autocorrect', 'off');
+    input.style.cssText = 'width:100%;background:var(--bg-sunken);border:1px solid var(--line);' +
+      'border-radius:var(--radius);padding:13px 15px;font-size:15px;margin:18px 0 12px;';
+    wrap.appendChild(input);
+
+    var row = PB.ui.el('div', 'row'); row.style.gap = '10px';
+    var save = PB.ui.el('button', 'btn btn-primary grow', 'Save key');
+    row.appendChild(save);
+    if (has) {
+      var clear = PB.ui.el('button', 'btn btn-ghost grow', 'Remove key');
+      clear.addEventListener('click', function () {
+        try { PB.brain.clearKey(); } catch (e) {}
+        sheet.close();
+        PB.ui.toast('Key removed. Fully on-device again.');
+        go('more');
+      });
+      row.appendChild(clear);
+    }
+    wrap.appendChild(row);
+
+    var note = PB.ui.el('p', 'tiny faint',
+      'The key is stored on this phone only, the same as everything else. Airplane mode still blocks it.');
+    note.style.marginTop = '12px';
+    wrap.appendChild(note);
+
+    var sheet = PB.ui.sheet('How BEE thinks', wrap);
+    save.addEventListener('click', function () {
+      var v = String(input.value || '').trim();
+      if (!v) return;
+      try { PB.brain.setKey(v); } catch (e) {}
+      sheet.close();
+      PB.ui.toast('Saved. Open questions will go to Claude now.');
+      go('more');
+    });
+  }
+
+  // Drop the service-worker caches and reload. The escape hatch for when a phone is
+  // holding an old copy of the app.
+  function reloadFresh() {
+    var done = function () { location.reload(); };
+    try {
+      if (!window.caches || !navigator.serviceWorker) return done();
+      PB.ui.toast('Fetching the latest build…');
+      Promise.all([
+        caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }),
+        navigator.serviceWorker.getRegistrations().then(function (rs) {
+          return Promise.all(rs.map(function (r) { return r.unregister(); }));
+        })
+      ]).then(done, done);
+    } catch (e) { done(); }
   }
 
   function countFor(id) {
