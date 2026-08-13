@@ -6007,7 +6007,13 @@ try {
   var STOP = { the: 1, a: 1, an: 1, my: 1, mine: 1, of: 1, to: 1, in: 1, on: 1, at: 1, and: 1, or: 1,
     is: 1, was: 1, are: 1, be: 1, i: 1, me: 1, it: 1, that: 1, this: 1, with: 1, for: 1, do: 1, did: 1,
     'do i': 1, who: 1, what: 1, whats: 1, when: 1, where: 1, know: 1, find: 1, called: 1, name: 1,
-    named: 1, one: 1, some: 1, was_: 1, again: 1, there: 1, from: 1 };
+    named: 1, one: 1, some: 1, was_: 1, again: 1, there: 1, from: 1,
+    // Question filler. Without these, "when do I *usually* post" scores every
+    // routine with the word "usually" in it above the one about posting.
+    usually: 1, normally: 1, typically: 1, generally: 1, often: 1, ever: 1,
+    how: 1, many: 1, much: 1, have: 1, has: 1, had: 1, does: 1, doing: 1,
+    go: 1, goes: 1, going: 1, get: 1, gets: 1, got: 1, tell: 1, im: 1, am: 1,
+    you: 1, your: 1, please: 1, need: 1, want: 1, should: 1, would: 1, could: 1 };
 
   function norm(s) {
     return String(s == null ? '' : s).toLowerCase()
@@ -6017,6 +6023,17 @@ try {
     var all = norm(s).split(' ').filter(Boolean);
     var kept = all.filter(function (t) { return !STOP[t]; });
     return kept.length ? kept : all;
+  }
+  // Crude, deliberate stemmer. "edits"/"editing" must reach "editor",
+  // "posts" must reach "post". Only ever used for matching, never for display.
+  function stem(w) {
+    if (!w || w.length < 4) return w;
+    if (/ies$/.test(w) && w.length > 4) return w.slice(0, -3) + 'y';
+    if (/ing$/.test(w) && w.length > 5) return w.slice(0, -3);
+    if (/(ches|shes|sses|xes)$/.test(w)) return w.slice(0, -2);
+    if (/ed$/.test(w) && w.length > 5) return w.slice(0, -2);
+    if (/s$/.test(w) && !/ss$/.test(w)) return w.slice(0, -1);
+    return w;
   }
   function lev(a, b) {
     if (a === b) return 0;
@@ -6035,13 +6052,21 @@ try {
     return prev[n];
   }
   // score one query token against one field's text
-  function tokenScore(tok, words, text) {
+  function tokenScore(tok, words, text, stems) {
     if (!tok) return 0;
-    var i, w;
+    var i, w, st;
     for (i = 0; i < words.length; i++) if (words[i] === tok) return 1;
+    st = stem(tok);
+    if (stems) {
+      for (i = 0; i < stems.length; i++) if (stems[i] === st) return 0.92;
+    }
     if (tok.length >= 3 && text.indexOf(tok) !== -1) {
       for (i = 0; i < words.length; i++) if (words[i].indexOf(tok) === 0) return 0.75;
       return 0.55;
+    }
+    if (st.length >= 3 && st !== tok && text.indexOf(st) !== -1) {
+      for (i = 0; i < words.length; i++) if (words[i].indexOf(st) === 0) return 0.7;
+      return 0.5;
     }
     if (tok.length >= 4) {
       for (i = 0; i < words.length; i++) {
@@ -6055,9 +6080,11 @@ try {
     var text = norm(Array.isArray(value) ? value.join(' ') : value);
     if (!text) return 0;
     var words = text.split(' ');
+    var stems = [], si;
+    for (si = 0; si < words.length; si++) stems.push(stem(words[si]));
     var sum = 0, hit = 0, i, s;
     for (i = 0; i < toks.length; i++) {
-      s = tokenScore(toks[i], words, text);
+      s = tokenScore(toks[i], words, text, stems);
       if (s > 0) hit++;
       sum += s;
     }
@@ -6079,9 +6106,108 @@ try {
     return total;
   }
 
+  /* Retrieval hints -------------------------------------------------------
+   * People do not ask questions in the words the data happens to use. She says
+   * "gym", the place is called Coil Pilates; she says "who does my hair", the
+   * contact says "hairstylist". These are matching aliases only — never shown,
+   * never part of the record's schema, so nothing downstream can read them by
+   * accident. Keyed by id so the collections above stay exactly as the
+   * contract defines them. */
+  var HINTS = {
+    // routines
+    r_batch: 'batch batching content filming film block day sunday afternoon',
+    r_latte: 'coffee latte oat milk cafe mavens morning drink order caffeine',
+    r_gym: 'pilates reformer gym class workout exercise training fitness coil bianca',
+    r_post: 'post posting upload publish video content go live posting schedule days',
+    r_winddown: 'skincare skin routine night nightly wind down bed bedtime evening',
+    r_footage: 'footage editor raw files send handoff tomas video',
+    r_invoice: 'invoice admin billing money paperwork finance friday',
+    r_mom: 'mom mother call family phone rosa sunday',
+    r_comments: 'comment reply engagement community',
+    r_groceries: 'grocery shopping food supermarket trader errand',
+    r_walk: 'walk walking reservoir evening exercise mood decompress',
+    r_quiet: 'quiet offline lay low silent recovery downtime',
+    // places
+    p_mavens: 'coffee cafe latte coffee shop breakfast morning spot',
+    p_bright: 'studio rental shoot space filming location',
+    p_home: 'home house apartment flat live place address',
+    p_sunshine: 'nail nails salon manicure pedicure thuy',
+    p_vega: 'hair salon hairdresser hairstylist stylist haircut colour color mari',
+    p_coil: 'gym pilates reformer workout class fitness exercise studio bianca',
+    p_derm: 'dermatologist derm skin doctor clinic appointment shah',
+    p_tj: 'grocery groceries supermarket shopping food',
+    p_elena: 'sister apartment family alhambra',
+    p_cosa: 'restaurant dinner pizza eat food out',
+    p_coldwater: 'podcast studio recording aisha',
+    p_reservoir: 'walk walking loop run outdoors reservoir',
+    // contacts — the role words she would actually use
+    c_tomas: 'edit editing editor cut cuts footage video post production',
+    c_mari: 'hair haircut hairstylist stylist curls colour color salon',
+    c_bianca: 'pilates gym trainer reformer class workout coach',
+    c_derm: 'dermatologist derm skin doctor dr appointment',
+    c_dani: 'manager management agent rates negotiation deals',
+    c_thuy: 'nail nails manicure salon tech',
+    c_marcus: 'bookkeeper accountant taxes books finance money',
+    c_sofia: 'assistant admin help scheduling inbox',
+    c_jess: 'best friend photographer lighting gear ring light',
+    c_kenji: 'photographer photos shoot camera',
+    c_jordan: 'barista coffee cafe mavens',
+    c_gary: 'landlord rent building apartment',
+    c_elena: 'sister sibling family',
+    c_mom: 'mom mother mum family parent',
+    c_abuela: 'grandmother grandma abuela family',
+    c_aisha: 'podcast host interview show',
+    c_nico: 'ex boyfriend partner',
+    c_chloe: 'creator friend colleague',
+    c_ravi: 'creator friend colleague'
+  };
+  function hint(id) { return HINTS[id] || ''; }
+
+  /* Preference rows are key/value pairs with no human label of their own.
+   * These give each one a name she would recognise and the words she would
+   * reach for. */
+  var PREF_META = {
+    skinType: { label: 'skin type', kw: 'skin skintype face complexion sensitive' },
+    skinNotes: { label: 'skincare notes', kw: 'skincare retinoid actives products derm routine' },
+    coffee: { label: 'coffee order', kw: 'coffee order latte drink cafe caffeine' },
+    coffeeCutoff: { label: 'caffeine cutoff', kw: 'caffeine coffee cutoff late sleep' },
+    commute: { label: 'how you get around', kw: 'drive driving car commute travel rideshare uber traffic' },
+    contentPillars: { label: 'content pillars', kw: 'content pillar topic niche video make film about' },
+    postingDays: { label: 'posting days', kw: 'post posting day upload publish schedule week' },
+    postingTime: { label: 'posting time', kw: 'post posting time upload publish schedule hour' },
+    platforms: { label: 'platforms', kw: 'platform tiktok instagram youtube reels shorts app' },
+    doNotDisturb: { label: 'do-not-disturb hours', kw: 'quiet hour disturb notification night sleep' },
+    hardNoDays: { label: 'days you keep clear', kw: 'no day block clear avoid busy schedule call' },
+    dislikes: { label: 'things you dislike', kw: 'dislike hate not like annoy peeve avoid stand pet hates' },
+    comfortFoods: { label: 'comfort foods', kw: 'comfort food eat favourite favorite meal hungry' },
+    whenStressed: { label: 'how you want me to be when you are stressed', kw: 'stressed stress overwhelmed hard bad day' },
+    whenTired: { label: 'how you want me to be when you are tired', kw: 'tired exhausted low energy sleep' },
+    notifications: { label: 'notification rules', kw: 'notification alert nudge ping quiet hours' },
+    money: { label: 'money and invoicing', kw: 'money invoice payment paid rate chase billing' },
+    workingStyle: { label: 'how you like your days to run', kw: 'batch batching shoot day call time pace habit' },
+    gearNotes: { label: 'gear', kw: 'gear camera equipment iphone light tripod film shoot' },
+    languages: { label: 'languages', kw: 'language spanish english speak bilingual' }
+  };
+
+  /* Profile was unreachable from search() entirely — occupation, wake time,
+   * follower count and city are among the most obvious things to ask about. */
+  var PROFILE_META = [
+    { key: 'occupation', label: 'what you do', kw: 'work job occupation career living profession do for work' },
+    { key: 'wakeTime', label: 'wake-up time', kw: 'wake wake up waking morning alarm rise start day' },
+    { key: 'sleepTime', label: 'bedtime', kw: 'sleep bed bedtime night asleep turn in' },
+    { key: 'city', label: 'where you live', kw: 'city live living based location home town area' },
+    { key: 'handle', label: 'your handle', kw: 'handle username instagram tiktok account profile' },
+    { key: 'bio', label: 'what you are known for', kw: 'bio about known for describe me myself' },
+    { key: 'name', label: 'your name', kw: 'name called' },
+    { key: 'age', label: 'your age', kw: 'age old birthday year' },
+    { key: 'pronouns', label: 'your pronouns', kw: 'pronoun she her they' },
+    { key: 'timezone', label: 'your timezone', kw: 'timezone time zone utc' }
+  ];
+
   function scoreContact(q, toks, c) {
     return scoreFields(q, toks, [
       [c.name, 3.0], [c.nickname, 2.6], [c.relationship, 2.2], [c.tags, 1.8],
+      [hint(c.id), 1.9],
       [c.vibe, 1.5], [c.howTheyMet, 1.3], [c.notes, 0.9], [c.phone, 0.6]
     ]);
   }
@@ -6095,8 +6221,8 @@ try {
     return scoreFields(q, toks, [[b.name, 3.2], [b.status, 1.6], [d, 1.3], [b.notes, 0.9],
       [c ? c.name + ' ' + c.nickname : '', 1.2], [b.fee, 0.5]]);
   }
-  function scoreRoutine(q, toks, r) { return scoreFields(q, toks, [[r.label, 2.6], [r.kind, 1.4], [r.time, 0.8]]); }
-  function scorePlace(q, toks, p) { return scoreFields(q, toks, [[p.name, 3.0], [p.kind, 1.6], [p.area, 1.6], [p.notes, 0.9]]); }
+  function scoreRoutine(q, toks, r) { return scoreFields(q, toks, [[r.label, 2.6], [hint(r.id), 2.4], [r.kind, 1.4], [r.time, 0.8]]); }
+  function scorePlace(q, toks, p) { return scoreFields(q, toks, [[p.name, 3.0], [hint(p.id), 2.2], [p.kind, 1.6], [p.area, 1.6], [p.notes, 0.9]]); }
   function scoreMemory(q, toks, m) { return scoreFields(q, toks, [[m.text, 2.4], [m.kind, 1.0], [m.source, 0.6]]); }
 
   function byId(list, id) {
@@ -6171,22 +6297,70 @@ try {
     push('memory', seedMemories, scoreMemory);
 
     // preferences, flattened into key/value rows
+    var prefs = (PB.kb && PB.kb.preferences) ? PB.kb.preferences : preferences;
     var prefRows = [];
-    for (var k in preferences) {
-      if (!Object.prototype.hasOwnProperty.call(preferences, k)) continue;
-      var v = preferences[k];
+    for (var k in prefs) {
+      if (!Object.prototype.hasOwnProperty.call(prefs, k)) continue;
+      var v = prefs[k];
       var text = (v && typeof v === 'object' && !Array.isArray(v))
         ? Object.keys(v).map(function (kk) { return kk + ' ' + v[kk]; }).join(' ')
         : (Array.isArray(v) ? v.join(', ') : String(v));
-      prefRows.push({ id: 'pref_' + k, key: k, value: v, text: text });
+      var meta = PREF_META[k] || null;
+      prefRows.push({
+        id: 'pref_' + k, key: k, value: v, text: text,
+        label: (meta && meta.label) || k.replace(/([A-Z])/g, ' $1').toLowerCase(),
+        keywords: (meta && meta.kw) || ''
+      });
     }
     push('preference', prefRows, function (qq, tt, row) {
-      return scoreFields(qq, tt, [[row.key.replace(/([A-Z])/g, ' $1'), 2.2], [row.text, 1.6]]);
+      return scoreFields(qq, tt, [
+        [row.keywords, 2.4],
+        [row.key.replace(/([A-Z])/g, ' $1'), 2.2],
+        [row.label, 1.8],
+        [row.text, 1.4]
+      ]);
+    });
+
+    // profile — occupation, wake time, follower count, city, handle. These were
+    // simply unreachable before: search() never looked at the profile at all.
+    push('profile', profileRows(), function (qq, tt, row) {
+      return scoreFields(qq, tt, [[row.keywords, 2.6], [row.label, 1.8], [row.text, 1.2]]);
     });
 
     out.sort(function (a, b) { return b.score - a.score; });
     return out.slice(0, 25);
   }
+
+  /* Searchable rows built off the profile. Shape matches the preference rows
+   * so a caller can format either the same way: {id, key, label, value, text}. */
+  function profileRows() {
+    var p = (PB.kb && PB.kb.profile) ? PB.kb.profile : profile;
+    var rows = [], i, m, def, v;
+    if (!p || typeof p !== 'object') return rows;
+
+    for (i = 0; i < PROFILE_META.length; i++) {
+      def = PROFILE_META[i];
+      v = p[def.key];
+      if (v == null || v === '') continue;
+      rows.push({
+        id: 'profile_' + def.key, key: def.key, label: def.label,
+        value: v, text: String(v), keywords: def.kw
+      });
+    }
+
+    // "how many followers do I have" — the number lives inside the bio string,
+    // where no amount of keyword matching would ever surface it as an answer.
+    m = String(p.bio || '').match(/([~≈]?\s?[\d][\d.,]*\s?[kmKM]?)\s*(?:followers|subscribers)/);
+    if (m) {
+      rows.push({
+        id: 'profile_followers', key: 'followers', label: 'follower count',
+        value: trimStr(m[1]), text: trimStr(m[1]) + ' followers',
+        keywords: 'follower following audience subscriber fan reach size big how many people'
+      });
+    }
+    return rows;
+  }
+  function trimStr(s) { return String(s == null ? '' : s).replace(/^\s+|\s+$/g, ''); }
 
   /* ---------------------------------------------------------------- bind */
 
@@ -15575,8 +15749,20 @@ try {
         if (when && low(hits[0].source) === 'told') lines[0] += ' You told me ' + fmtRelative(when) + '.';
       }
     } else {
-      lines.push(subject ? ('On ' + subject + ':') : 'Here\'s what I have:');
-      hits.slice(0, 4).forEach(function (m) { lines.push('· ' + memoryLine(m)); });
+      // Lead with the fact she asked for, not with a header over a list.
+      // "What's my posting schedule?" wants "Wednesdays and Saturdays, around
+      // 6pm" — the four related things BEE also holds come after, or not at all.
+      var headline = '';
+      try { headline = kbHeadline(text); } catch (e) { headline = ''; }
+      var rest = hits.slice(0, 4);
+      if (headline) {
+        rest = rest.filter(function (m) { return !saysTheSame(headline, memoryLine(m)); });
+        lines.push(headline);
+        if (rest.length) lines.push(subject ? ('Also on ' + subject + ':') : 'Also:');
+      } else {
+        lines.push(subject ? ('On ' + subject + ':') : 'Here\'s what I have:');
+      }
+      rest.forEach(function (m) { lines.push('· ' + memoryLine(m)); });
     }
 
     var chips = [];
@@ -16364,7 +16550,14 @@ try {
     if (c.relationship) head += (head.indexOf('—') === -1 ? ' — ' : ', ') + c.relationship;
     lines.push(head + '.');
     if (c.vibe) lines.push(cap(trim(c.vibe)).replace(/[.\s]*$/, '') + '.');
-    if (c.howTheyMet) lines.push('You met ' + trim(c.howTheyMet).replace(/[.\s]*$/, '') + '.');
+    if (c.howTheyMet) {
+      // howTheyMet is written as a whole sentence ("Slid into Maya's DMs after…"), so
+      // prefixing "You met " produces "You met Slid into Maya's DMs". Only prefix when
+      // the note reads as a place or occasion rather than a sentence about them.
+      var how = trim(c.howTheyMet).replace(/[.\s]*$/, '');
+      var isSentence = /^[A-Z]/.test(how) && /\s(is|was|were|had|has|does|did|slid|cut|hired|met|referred|born|taught|lives|works)\s/i.test(how);
+      lines.push(isSentence ? how + '.' : 'You met ' + how + '.');
+    }
     if (c.lastSeen) {
       var ls = toDate(c.lastSeen);
       if (ls) lines.push('Last time you saw them: ' + fmtRelative(ls) + '.');
@@ -16484,6 +16677,13 @@ try {
     var narrowed = !general && !!q;
 
     if (!hits.length && narrowed) {
+      // Observed memory has nothing — but the knowledge base very often does.
+      // Dumping four unrelated memories is the worst of both: not an answer,
+      // and it buries the fact that BEE didn't have one.
+      var fromKB = null;
+      try { fromKB = answerFromKB(text, parsed); } catch (e0) { fromKB = null; }
+      if (fromKB) return fromKB;
+
       hits = memoryRecall('');           // fall back to everything, honestly framed
       if (hits.length) {
         var lines0 = ['Nothing specifically on that. Here\'s what I do have:'];
@@ -16491,7 +16691,7 @@ try {
         return reply(lines0.join('\n'),
           [{ label: 'Forget one', send: 'Forget that ' + shortLabel(hits[0].text) },
           { label: 'What do you store?', send: 'What do you store about me?' }],
-          memCard(hits, 'fallback'), []);
+          memCard(hits, 'fallback'), [], true);
       }
     }
 
@@ -16788,6 +16988,382 @@ try {
       : [{ label: 'What\'s next?', send: 'What\'s next today?' }], null, []);
   }
 
+  /* ------------------------------------------------------------------ *
+   * Knowledge-base retrieval — the general answer path
+   *
+   * PB.kb.search() has always ranked the whole of her life — contacts, events,
+   * brands, routines, places, preferences, profile — against a free-text
+   * query. Nothing in here ever called it. So BEE answered the phrasings that
+   * happened to collide with a hand-written keyword and shrugged at everything
+   * else, with the answer sitting right there in the KB. Every "I'm not sure"
+   * path now comes through here first.
+   * ------------------------------------------------------------------ */
+
+  var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  var KB_MIN = 1.0;          // below this, retrieval is noise, not an answer
+  var KB_FOLLOW = 0.72;      // follow-ons must be close to the winner
+
+  function daysPhrase(days) {
+    var d = arr(days).filter(function (x) { return typeof x === 'number' && x >= 0 && x <= 6; });
+    var uniq = [];
+    d.forEach(function (x) { if (uniq.indexOf(x) === -1) uniq.push(x); });
+    uniq.sort(function (a, b) { return a - b; });
+    if (!uniq.length) return '';
+    if (uniq.length === 7) return 'every day';
+    if (uniq.join(',') === '1,2,3,4,5') return 'weekdays';
+    if (uniq.join(',') === '0,6') return 'weekends';
+    return joinList(uniq.map(function (x) { return DAY_NAMES[x] + 's'; }), 'and');
+  }
+
+  function timePhrase(hhmm) {
+    var m = trim(hhmm).match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return '';
+    var h = parseInt(m[1], 10), mi = m[2];
+    if (isNaN(h)) return '';
+    var ap = (h >= 12 && h < 24) ? 'pm' : 'am';
+    var h12 = h % 12; if (h12 === 0) h12 = 12;
+    return h12 + (mi === '00' ? '' : ':' + mi) + ap;
+  }
+
+  /* "Reformer class Tuesday and Thursday mornings" -> "reformer class".
+   * The days and the time are being said in the lead already; repeating them
+   * is what made the old answers read like a data dump. */
+  function labelCore(label) {
+    var s = trim(label);
+    if (!s) return '';
+    s = s.replace(/\b(sun|mon|tues|tuesd|wednes|thurs|thursd|fri|satur)days?\b/gi, '');
+    s = s.replace(/\b(mornings?|afternoons?|evenings?|nights?|weekdays?|weekends?)\b/gi, '');
+    s = s.replace(/\s{2,}/g, ' ');
+    // Removing the days leaves the words that joined them: "Posts main videos
+    // Wednesday and Saturday" must not become "posts main videos and".
+    s = s.replace(/\s*\b(and|or|&)\b\s*(?=[,;:–—-]|$)/gi, '');
+    s = s.replace(/\b(usually|around|about|every|on|at|in)\b\s*$/gi, '');
+    // A run of punctuation left behind by the removals collapses to one mark.
+    s = s.replace(/[\s,;:]*[–—-][\s,;:–—-]*/g, ' — ').replace(/[\s,;:]{2,}/g, ', ');
+    s = s.replace(/^[\s,;:–—-]+/, '').replace(/[\s,;:–—-]+$/, '');
+    s = s.replace(/\s+([,;:])/g, '$1').replace(/\s{2,}/g, ' ');
+    return trim(s);
+  }
+
+  /* labelCore output is a fragment inside a sentence, so it starts lowercase —
+   * except when the first word is a name. */
+  function deCap(s) {
+    s = trim(s);
+    if (!s) return s;
+    var first = s.split(/\s+/)[0];
+    if (/^[A-Z]{2,}$/.test(first)) return s;
+    if (/^[A-Z][a-z]+$/.test(first) && /^[A-Z]/.test((s.split(/\s+/)[1] || ''))) return s;
+    return s.charAt(0).toLowerCase() + s.slice(1);
+  }
+
+  function firstSentence(s) {
+    var t = trim(s);
+    if (!t) return '';
+    var m = t.match(/^[^.!?]{4,140}[.!?]/);
+    return trim(m ? m[0] : (t.length > 140 ? t.slice(0, 137) + '…' : t));
+  }
+
+  function endStop(s) {
+    var t = trim(s);
+    if (!t) return '';
+    return /[.!?:…]$/.test(t) ? t : t + '.';
+  }
+
+  /* What kind of answer is she after? Retrieval alone puts "Coil Pilates" at
+   * the top of "when do I go to pilates" — the right subject, the wrong fact. */
+  function askShape(text) {
+    var t = low(text);
+    return {
+      who: /\bwho\b|\bwhose\b/.test(t),
+      where: /\bwhere\b/.test(t) ||
+        /\b(?:what|which)\s+(?:gym|cafe|caf|coffee shop|studio|salon|place|spot|restaurant|store|shop|clinic|bar|market)\b/.test(t),
+      howMany: /\bhow (?:many|much|big)\b/.test(t),
+      when: /\bwhen\b|\bwhat time\b|\bwhat days?\b|\bwhich days?\b|\bhow often\b|\bschedule\b|\broutine\b|\bwhat.{0,12}\btime\b/.test(t)
+    };
+  }
+
+  var SHAPE_BOOST = {
+    who: { contact: 1.9, event: 0.9, place: 0.7, routine: 0.7, preference: 0.7, profile: 0.8, brand: 0.9, memory: 0.9 },
+    where: { place: 1.9, event: 1.1, profile: 1.0, routine: 0.85, preference: 0.8, brand: 0.8, memory: 0.9, contact: 0.6 },
+    howMany: { profile: 1.7, brand: 1.1, preference: 1.0, memory: 1.0, routine: 0.8, event: 0.8, place: 0.7, contact: 0.6 },
+    when: { routine: 1.8, event: 1.25, preference: 1.15, profile: 1.1, memory: 1.0, brand: 0.9, place: 0.7, contact: 0.45 },
+    none: { contact: 0.85, event: 0.95, brand: 1.0, routine: 1.0, place: 1.0, preference: 1.0, profile: 1.0, memory: 1.0 }
+  };
+
+  function shapeKey(shape) {
+    if (shape.who) return 'who';
+    if (shape.where) return 'where';
+    if (shape.howMany) return 'howMany';
+    if (shape.when) return 'when';
+    return 'none';
+  }
+
+  function hitKey(h) {
+    var it = h.item || {};
+    return h.type + '::' + low(it.key || it.label || it.name || it.title || it.text || it.id || '');
+  }
+
+  function kbRank(text) {
+    var raw = [];
+    try { raw = arr(call(kb(), ['search'], [text], [])); } catch (e) { raw = []; }
+    var shape = askShape(text);
+    var boost = SHAPE_BOOST[shapeKey(shape)];
+    var seen = {}, out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var h = raw[i];
+      if (!h || !h.item || typeof h.score !== 'number') continue;
+      var k = hitKey(h);
+      if (seen[k]) continue;              // recurring events repeat verbatim
+      seen[k] = 1;
+      out.push({ type: h.type, item: h.item, score: h.score * (boost[h.type] || 1) });
+    }
+    out.sort(function (a, b) { return b.score - a.score; });
+    return { hits: out, shape: shape };
+  }
+
+  /* --- turning one hit into a sentence that answers, not a record dump --- */
+
+  function prefValueText(v) {
+    if (isArr(v)) return joinList(v.map(trim).filter(Boolean), 'and');
+    if (v && typeof v === 'object') {
+      var parts = [];
+      for (var k in v) {
+        if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+        parts.push(k.replace(/([A-Z])/g, ' $1').toLowerCase() + ' ' + (isArr(v[k]) ? joinList(v[k]) : v[k]));
+      }
+      return joinList(parts, 'and');
+    }
+    return trim(v);
+  }
+
+  /* postingDays and postingTime are two rows answering one question. */
+  function prefSibling(key) {
+    var prefs = (kb() && kb().preferences) ? kb().preferences : null;
+    if (!prefs || !/Days$/.test(key)) return '';
+    var t = prefs[key.replace(/Days$/, 'Time')];
+    return t ? trim(prefValueText(t)) : '';
+  }
+
+  function routineLead(it, shape) {
+    var dp = daysPhrase(it.days), tp = timePhrase(it.time), core = labelCore(it.label);
+    var hedge = (typeof it.confidence === 'number' && it.confidence < 0.55)
+      ? ' That one\'s a pattern I think I see, not something you\'ve told me.' : '';
+    if (shape.when && (dp || tp)) {
+      var when = dp ? cap(dp) : '';
+      if (tp) when += (when ? ', usually around ' + tp : 'Usually around ' + tp);
+      if (core && core.split(/\s+/).length >= 2) when += ' — ' + deCap(core);
+      return { lead: endStop(when) + hedge, extra: '' };
+    }
+    var lead = endStop(cap(trim(it.label)));
+    var tail = [];
+    if (dp) tail.push(dp);
+    if (tp) tail.push('around ' + tp);
+    return { lead: lead + (tail.length ? ' ' + endStop(cap(tail.join(', '))) : ''), extra: hedge ? trim(hedge) : '' };
+  }
+
+  function placeLead(it) {
+    var head = trim(it.name) || 'A place';
+    if (it.area) head += ', in ' + trim(it.area);
+    return { lead: endStop(head), extra: firstSentence(it.notes) };
+  }
+
+  function preferenceLead(it) {
+    var label = trim(it.label) || trim(it.key);
+    var v = it.value;
+    if (isArr(v) && v.length > 3) {
+      return { lead: cap(label) + ':', bullets: v.slice(0, 6).map(trim) };
+    }
+    var val = prefValueText(v);
+    if (!val) return null;
+    var sib = prefSibling(it.key);
+    if (sib) val += ', usually ' + (/^\d/.test(sib) ? 'around ' : '') + sib;
+    if (val.length <= 80) return { lead: endStop(cap(val) + ' — your ' + label), extra: '' };
+    return { lead: cap('your ' + label) + ': ' + endStop(val), extra: '' };
+  }
+
+  function profileLead(it) {
+    var v = trim(it.value), k = it.key;
+    if (!v) return null;
+    if (k === 'wakeTime') return { lead: endStop('Usually up around ' + (timePhrase(v) || v)), extra: '' };
+    if (k === 'sleepTime') return { lead: endStop('You\'re usually down around ' + (timePhrase(v) || v)), extra: '' };
+    if (k === 'followers') return { lead: endStop('About ' + v.replace(/^[~≈]\s*/, '') + ' followers'), extra: '' };
+    if (k === 'occupation') return { lead: endStop(cap(v)), extra: '' };
+    if (k === 'city') return { lead: endStop('You\'re in ' + v), extra: '' };
+    if (k === 'handle') return { lead: endStop(v + ' — that\'s your handle'), extra: '' };
+    if (k === 'age') return { lead: endStop(v + ' — that\'s your age'), extra: '' };
+    if (k === 'bio') return { lead: endStop(cap(firstSentence(v) || v)), extra: '' };
+    return { lead: endStop(cap(trim(it.label) || k) + ': ' + v), extra: '' };
+  }
+
+  function brandLead(it) {
+    var bits = [trim(it.name)];
+    if (it.status) bits.push(it.status);
+    var open = arr(it.deliverables).filter(function (d) { return d && !d.done; });
+    var lead = endStop(bits.join(' — '));
+    var extra = '';
+    if (open.length) {
+      var d = open[0];
+      extra = endStop('Still open: ' + trim(d.what) + (d.dueDate ? ' (' + fmtDay(toDate(d.dueDate)) + ')' : ''));
+    }
+    return { lead: lead, extra: extra };
+  }
+
+  /* -> { lead, extra, bullets } or null */
+  function kbLead(hit, shape) {
+    if (!hit || !hit.item) return null;
+    var it = hit.item;
+    switch (hit.type) {
+      case 'routine': return routineLead(it, shape);
+      case 'place': return placeLead(it);
+      case 'preference': return preferenceLead(it);
+      case 'profile': return profileLead(it);
+      case 'brand': return brandLead(it);
+      case 'event': return { lead: endStop(cap(eventLine(it, true))), extra: firstSentence(it.notes) };
+      case 'memory': return { lead: memoryLine(it), extra: '' };
+      default: return null;
+    }
+  }
+
+  /* One-liners for the "also matched" bullets. */
+  function kbBullet(hit) {
+    var it = hit.item;
+    switch (hit.type) {
+      case 'routine':
+        var dp = daysPhrase(it.days), tp = timePhrase(it.time);
+        return endStop(trim(it.label) + (dp || tp ? ' — ' + [dp, tp ? 'around ' + tp : ''].filter(Boolean).join(', ') : ''));
+      case 'place': return endStop(trim(it.name) + (it.area ? ', ' + trim(it.area) : ''));
+      case 'preference':
+        var pv = prefValueText(it.value);
+        return endStop(cap(trim(it.label) || it.key) + ': ' + (pv.length > 110 ? pv.slice(0, 107) + '…' : pv));
+      case 'profile': return endStop(cap(trim(it.label)) + ': ' + trim(it.value));
+      case 'event': return endStop(eventLine(it, true));
+      case 'contact': return endStop(contactLine(it));
+      case 'brand': return endStop(trim(it.name) + (it.status ? ' — ' + it.status : ''));
+      case 'memory': return memoryLine(it);
+      default: return '';
+    }
+  }
+
+  var OVERLAP_STOP = { the: 1, a: 1, an: 1, and: 1, or: 1, of: 1, to: 1, in: 1, on: 1, at: 1, your: 1,
+    you: 1, my: 1, is: 1, it: 1, that: 1, usually: 1, around: 1, about: 1 };
+
+  function contentWords(s) {
+    return low(s).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+      .filter(function (w) { return w.length > 2 && !OVERLAP_STOP[w]; })
+      .map(function (w) {
+        // "posting"/"posts"/"post" have to count as the same word, or a
+        // follow-on that only repeats the lead sneaks through.
+        if (/ing$/.test(w) && w.length > 5) return w.slice(0, -3);
+        if (/s$/.test(w) && !/ss$/.test(w)) return w.slice(0, -1);
+        return w;
+      });
+  }
+
+  /* Is this follow-on just the lead said again? */
+  function saysTheSame(a, b) {
+    var A = contentWords(a), B = contentWords(b);
+    if (!A.length || !B.length) return false;
+    var set = {}, i, hit = 0;
+    for (i = 0; i < A.length; i++) set[A[i]] = 1;
+    for (i = 0; i < B.length; i++) if (set[B[i]]) hit++;
+    return (hit / Math.min(A.length, B.length)) >= 0.5;
+  }
+
+  function kbChips(type) {
+    if (type === 'routine' || type === 'preference' || type === 'profile') {
+      return [
+        { label: 'What else do you know?', send: 'What do you know about me?' },
+        { label: 'What\'s next?', send: 'What\'s next today?' }
+      ];
+    }
+    return [{ label: 'What\'s next?', send: 'What\'s next today?' }];
+  }
+
+  function kbCard(hit) {
+    if (!hit) return null;
+    if (hit.type === 'event') return schedCard(fmtDay(toDate(hit.item.start)), toDate(hit.item.start), [hit.item]);
+    if (hit.type === 'memory') return memCard([hit.item], 'recall');
+    return null;
+  }
+
+  /* The whole point: answer the question from the knowledge base.
+   * Returns a reply, or null when the KB genuinely has nothing. */
+  function answerFromKB(text, parsed) {
+    if (!trim(text) || !kb()) return null;
+
+    var shape = askShape(text);
+    var ranked = kbRank(text);
+    var hits = ranked.hits;
+    if (!hits.length) return null;
+
+    // Role-shaped "who" questions — "who does my hair", "who edits my videos".
+    // findContact already scores relationship/vibe/tags; it just was not asked.
+    // Ranked search has to agree, so a stray word in someone's notes can't
+    // put a random person's card up.
+    if (shape.who && hits[0].type === 'contact' && hits[0].score >= KB_MIN) {
+      var byRole = arr(call(kb(), ['findContact'], [text], []));
+      for (var w = 0; w < byRole.length && w < 3; w++) {
+        if (byRole[w] && byRole[w].id === hits[0].item.id) {
+          state.lastPerson = firstName(byRole[w].name) || byRole[w].name;
+          return describeContact(byRole[w], byRole.slice(0, 3), 'match', false, byRole.length > 1);
+        }
+      }
+    }
+
+    // A contact winning any other question shape is nearly always a stray
+    // keyword in someone's notes. Let the next hit answer instead.
+    var best = null, i;
+    for (i = 0; i < hits.length; i++) {
+      if (hits[i].type === 'contact' && !shape.who) continue;
+      best = hits[i];
+      break;
+    }
+    if (!best || best.score < KB_MIN) return null;
+
+    var head = kbLead(best, shape);
+    if (!head || !trim(head.lead)) return null;
+
+    var lines = [trim(head.lead)];
+    if (head.bullets) {
+      head.bullets.forEach(function (b) { if (trim(b)) lines.push('· ' + endStop(cap(trim(b)))); });
+    }
+    if (trim(head.extra)) lines.push(trim(head.extra));
+
+    // Follow-ons, only when something else genuinely matched too.
+    if (!head.bullets) {
+      var extras = [];
+      for (i = 0; i < hits.length && extras.length < 2; i++) {
+        var h = hits[i];
+        if (h === best || h.score < best.score * KB_FOLLOW) continue;
+        if (h.type === 'contact' && !shape.who) continue;
+        var b = trim(kbBullet(h));
+        if (!b || saysTheSame(lines.join(' '), b)) continue;
+        extras.push(b);
+      }
+      if (extras.length) {
+        lines.push('Also:');
+        extras.forEach(function (x) { lines.push('· ' + x); });
+      }
+    }
+
+    return reply(lines.join('\n'), kbChips(best.type), kbCard(best), []);
+  }
+
+  /* Just the headline fact, for prefixing an answer that would otherwise open
+   * with a list. Returns '' unless retrieval is confident and specific. */
+  function kbHeadline(text) {
+    if (!trim(text) || !kb()) return '';
+    var ranked = kbRank(text);
+    var hits = ranked.hits;
+    if (!hits.length) return '';
+    var best = hits[0];
+    if (best.type === 'contact' || best.type === 'memory' || best.type === 'event') return '';
+    if (best.score < 1.8) return '';
+    var head = kbLead(best, ranked.shape);
+    if (!head || head.bullets || !trim(head.lead)) return '';
+    return trim(head.lead);
+  }
+
   /* Never a dead end. Every reply either does something, answers something,
    * or moves the conversation forward with a real question. No shrugs. */
   function hOpen(text, parsed) {
@@ -16811,6 +17387,14 @@ try {
         chips.push({ label: 'What\'s tomorrow?', send: 'What\'s on tomorrow?' });
       }
       return reply(lines.join(' '), chips, null, [], true);
+    }
+
+    // 2.5 Does her own knowledge base answer it? This has to run before the
+    // keyword branches below — "who does my hair?" is a question with an
+    // answer, not a prompt to explain how contact search works.
+    if (isQuestion(text)) {
+      var fromKB = answerFromKB(text, parsed);
+      if (fromKB) return fromKB;
     }
 
     // 3. Is it near a capability? Say the useful thing, then ask something real.
@@ -16869,12 +17453,11 @@ try {
     return s;
   }
 
-  /* The honest fallback: never generic, always anchored in something real. */
+  /* The honest fallback. Anchored in something real when there is something
+   * real; plainly empty-handed when there isn't. */
   function openEnded(text) {
     var name = userName();
     var over = overdueReminders();
-    var ev = nextEvent(now());
-    var evToday = ev && sameDay(toDate(ev.start), now());
 
     var lines = [];
     var chips = [];
@@ -16892,16 +17475,20 @@ try {
         ], null, [], true);
     }
 
+    // A question BEE cannot answer gets said plainly. Pivoting to whatever is
+    // next on the calendar reads as evasion — it answers a question she did
+    // not ask, and it hides the fact that BEE came up empty.
+    if (isQuestion(text)) {
+      lines.push('I don\'t have anything on that. You could tell me and I\'ll keep it.');
+      chips.push({ label: 'What do you know about me?', send: 'What do you know about me?' });
+      chips.push({ label: 'What can you do?', send: 'What can you do?' });
+      return reply(lines.join('\n'), chips, null, [], true);
+    }
+
     if (over.length) {
       lines.push(nextOpener() + ' But ' + trim(over[0].text) + ' is still sitting past its time — want to knock it out, or push it?');
       chips.push({ label: 'Done with it', send: 'done with ' + over[0].text });
       chips.push({ label: 'Push it an hour', send: 'snooze ' + over[0].text + ' 60 minutes' });
-    } else if (evToday) {
-      var s = toDate(ev.start);
-      lines.push(nextOpener() + ' What I do have: ' + (trim(ev.title) || 'your next thing') +
-        ' is ' + fmtRelative(s) + '. Want to prep for it, or were you after something else?');
-      chips.push({ label: 'Prep for it', send: 'Remind me to prep for ' + (trim(ev.title) || 'that') });
-      chips.push({ label: 'Rest of my day', send: 'What\'s on today?' });
     } else {
       var mem = memRecall('');
       if (mem.length) {
@@ -17066,6 +17653,20 @@ try {
       return reply(trim(parsed.clarifyQuestion), DEFAULT_CHIPS.slice(), null, [], true);
     }
 
+    var out = dispatch(intent, text, parsed);
+
+    // A thin reply to a real question, when the KB holds the answer, is the
+    // failure the whole retrieval path exists to stop. Every handler gets the
+    // same safety net, not just the catch-all.
+    if (isQuestion(text) && (!out || out._soft === true)) {
+      var kbAns = null;
+      try { kbAns = answerFromKB(text, parsed); } catch (e) { kbAns = null; }
+      if (kbAns) return kbAns;
+    }
+    return out;
+  }
+
+  function dispatch(intent, text, parsed) {
     switch (intent) {
       case 'reminder.create': return hReminderCreate(text, parsed);
       case 'reminder.list': return hReminderList(text, parsed);
