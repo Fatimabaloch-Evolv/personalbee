@@ -5239,7 +5239,7 @@ img { max-width: 100%; display: block; }
 </div>
 
 <script>
-window.PB_BUILD = "2026-08-14 11:01 UTC";
+window.PB_BUILD = "2026-08-14 11:24 UTC";
 
 /* ===== js/core.js ===== */
 try {
@@ -6959,9 +6959,14 @@ try {
  *
  * Public API (see CONTRACT.md):
  *   PB.nlu.parse(text, ctx) -> { intent, confidence, entities:{task,datetime,datetimeText,
- *                                recurrence,person,place,topic,brand},
+ *                                recurrence,person,place,topic,brand,hasTime,hasDate},
  *                                needsClarification, clarifyQuestion, raw }
- *   PB.nlu.parseDateTime(text, now) -> { date: Date|null, text, confidence, recurrence }
+ *   PB.nlu.parseDateTime(text, now) -> { date: Date|null, text, confidence, recurrence,
+ *                                        hasTime, hasDate }
+ *
+ * hasTime/hasDate are additive (the contract's four fields are unchanged) and answer
+ * one question the rest of the app cannot answer for itself: did SHE give us the hour,
+ * or did we pick it? Reminders uses it to disclose the times it chose.
  *   PB.nlu.test() -> { passed, failed, results }
  *
  * Philosophy: reliability over cleverness. When the parser is not sure, it says so
@@ -6982,6 +6987,39 @@ window.PB = window.PB || {};
   function addDays(d, n) { var x = clone(d); x.setDate(x.getDate() + n); return x; }
   function addMinutes(d, n) { return new Date(d.getTime() + n * 60000); }
   function setTime(d, h, m) { var x = clone(d); x.setHours(h, m || 0, 0, 0); return x; }
+
+  /* Calendar arithmetic that never overflows. setMonth(+1) on the 31st lands in the
+   * month after next; setFullYear(+1) on 29 Feb lands on 1 Mar. Both are silent, and
+   * both make a repeating reminder drift away from the day it was set for. Clamp to
+   * the last real day of the target month instead, and carry the intended day-of-month
+   * along as an anchor so the next roll goes back to it. */
+  function daysInMonth(y, mo) { return new Date(y, mo + 1, 0).getDate(); }
+
+  function withDayOfMonth(d, dom) {
+    var x = clone(d);
+    x.setDate(1);
+    x.setDate(Math.min(dom, daysInMonth(x.getFullYear(), x.getMonth())));
+    return x;
+  }
+
+  function addMonthsClamped(d, n, dom) {
+    var target = dom || d.getDate();
+    var x = clone(d);
+    x.setDate(1);                                    // never overflow while the month moves
+    x.setFullYear(x.getFullYear(), x.getMonth() + n, 1);
+    x.setDate(Math.min(target, daysInMonth(x.getFullYear(), x.getMonth())));
+    return x;
+  }
+
+  function addYearsClamped(d, n, dom) {
+    var target = dom || d.getDate();
+    var mo = d.getMonth();
+    var x = clone(d);
+    x.setDate(1);
+    x.setFullYear(x.getFullYear() + n, mo, 1);
+    x.setDate(Math.min(target, daysInMonth(x.getFullYear(), mo)));
+    return x;
+  }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
   function hhmm(d) { return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
   function spaces(n) { var s = ''; while (s.length < n) s += ' '; return s; }
@@ -7139,7 +7177,11 @@ window.PB = window.PB || {};
       recurrence: null,
       // flags
       unresolvedAnchor: null, // e.g. 'shoot' when we could not find the event
-      ambiguous: false
+      ambiguous: false,
+      // a bare weekday that names TODAY ("Friday", said on a Friday) — resolved late,
+      // once we know whether the time she gave is still ahead of us
+      bareWeekdayToday: false,
+      bareWeekdayDow: null
     };
   }
 
@@ -7368,14 +7410,16 @@ window.PB = window.PB || {};
   }
 
   function scanAbsoluteDates(st) {
+    // "Feb 30" is a typo, not a date in March. Clamp rather than overflow silently.
+    var mkDay = function (y, mo, day) { return new Date(y, mo, Math.min(day, daysInMonth(y, mo))); };
     var mk = function (m, monIdx, dayIdx, yrIdx) {
       var mo = MONTH_LOOKUP[m[monIdx].toLowerCase()];
       var day = parseInt(m[dayIdx], 10);
       if (mo == null || !(day >= 1 && day <= 31)) return false;
       var yr = m[yrIdx] ? parseInt(m[yrIdx], 10) : st.now.getFullYear();
       if (yr < 100) yr += 2000;
-      var d = new Date(yr, mo, day);
-      if (!m[yrIdx] && d.getTime() < startOfDay(st.now).getTime()) d = new Date(yr + 1, mo, day);
+      var d = mkDay(yr, mo, day);
+      if (!m[yrIdx] && d.getTime() < startOfDay(st.now).getTime()) d = mkDay(yr + 1, mo, day);
       setDay(st, d, 0.95, 'date');
       return true;
     };
@@ -7395,8 +7439,8 @@ window.PB = window.PB || {};
       if (mo < 0 || mo > 11 || day < 1 || day > 31) return false;
       var yr = m[3] ? parseInt(m[3], 10) : st.now.getFullYear();
       if (yr < 100) yr += 2000;
-      var d = new Date(yr, mo, day);
-      if (!m[3] && d.getTime() < startOfDay(st.now).getTime()) d = new Date(yr + 1, mo, day);
+      var d = mkDay(yr, mo, day);
+      if (!m[3] && d.getTime() < startOfDay(st.now).getTime()) d = mkDay(yr + 1, mo, day);
       setDay(st, d, 0.8, 'date');
       st.ambiguous = !m[3];
       return true;
@@ -7492,7 +7536,16 @@ window.PB = window.PB || {};
     grab(st, RE_THIS_DOW, function (m) {
       var d = DOW_LOOKUP[m[1].toLowerCase()];
       if (d == null) return false;
-      setDay(st, comingWeekday(st.now, d), 0.8, 'weekday');
+      var target = comingWeekday(st.now, d);
+      setDay(st, target, 0.8, 'weekday');
+      // Saying "Friday" on a Friday is the one weekday case that can silently produce a
+      // time that has already gone. We can't settle it here — the clock hasn't been
+      // scanned yet — so flag it and decide in scanDateTime once the hour is known.
+      if (st.dayKind === 'weekday' && st.anchorDate &&
+          st.anchorDate.getTime() === startOfDay(st.now).getTime()) {
+        st.bareWeekdayToday = true;
+        st.bareWeekdayDow = d;
+      }
       return true;
     });
   }
@@ -7525,6 +7578,15 @@ window.PB = window.PB || {};
     if (dp === 'morning') return h === 12 ? 0 : h;
     if (dp === 'afternoon' || dp === 'evening' || dp === 'night' || dp === 'tonight') {
       return h === 12 ? 12 : (h < 12 ? h + 12 : h);
+    }
+    // A repeating rule must not depend on the minute it was typed. "Every weekday at 8"
+    // is 8 in the morning whether she says it over breakfast or at midnight — resolving
+    // it against the wall clock makes the same sentence build two different products,
+    // and an 8pm weekday alarm is almost never what anyone meant.
+    if (st.recurrence) {
+      if (h === 12) return 12;
+      if (h >= 6 && h <= 11) return h;        // 6..11 -> morning
+      return h + 12;                          // 1..5  -> afternoon/evening
     }
     if (h === 12) return 12;
     if (h >= 1 && h <= 6) return h + 12;               // "at 3" -> 3pm
@@ -7641,6 +7703,11 @@ window.PB = window.PB || {};
     });
   }
 
+  function validDom(v) {
+    var n = parseInt(v, 10);
+    return (n >= 1 && n <= 31) ? n : 0;
+  }
+
   /* Next occurrence for a recurrence rule. */
   function nextRecurrence(rec, now, h, m) {
     var base = setTime(now, h, m);
@@ -7650,13 +7717,19 @@ window.PB = window.PB || {};
       return nx;
     }
     if (rec.freq === 'monthly') {
-      var d = setTime(now, h, m);
-      if (d.getTime() <= now.getTime()) d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate(), h, m, 0, 0);
+      var mdom = validDom(rec.dayOfMonth) || now.getDate();
+      var d = setTime(withDayOfMonth(now, mdom), h, m);
+      if (d.getTime() <= now.getTime()) d = addMonthsClamped(d, 1, mdom);
       return d;
     }
     if (rec.freq === 'yearly') {
-      var y = setTime(now, h, m);
-      if (y.getTime() <= now.getTime()) y = new Date(y.getFullYear() + 1, y.getMonth(), y.getDate(), h, m, 0, 0);
+      var ydom = validDom(rec.dayOfMonth) || now.getDate();
+      var ymon = (rec.month >= 0 && rec.month <= 11) ? rec.month : now.getMonth();
+      var y = clone(now);
+      y.setDate(1);
+      y.setFullYear(y.getFullYear(), ymon, 1);
+      y = setTime(withDayOfMonth(y, ydom), h, m);
+      if (y.getTime() <= now.getTime()) y = addYearsClamped(y, 1, ydom);
       return y;
     }
     var days = rec.days && rec.days.length ? rec.days : [0, 1, 2, 3, 4, 5, 6];
@@ -7684,6 +7757,7 @@ window.PB = window.PB || {};
     var dayScore = st.dayScore;
     var rolled = false;
     var past = false;
+    var weekdayRolled = false;
 
     // 1. pure offset ("in 20 minutes") wins outright
     if (st.hasOffset) {
@@ -7705,12 +7779,27 @@ window.PB = window.PB || {};
       if (st.recurrence) {
         var rh = (h == null) ? 9 : h, rm = (h == null) ? 0 : m;
         st.recurrence.time = pad2(rh) + ':' + pad2(rm);
+        // Month/year rules need the day they were set for, kept apart from any date we
+        // happen to land on, so rolling forward never drifts off a 31st or a 29 Feb.
+        if (st.recurrence.freq === 'monthly' || st.recurrence.freq === 'yearly') {
+          var domSrc = st.anchorDate || now;
+          st.recurrence.dayOfMonth = domSrc.getDate();
+          if (st.recurrence.freq === 'yearly') st.recurrence.month = domSrc.getMonth();
+        }
         date = nextRecurrence(st.recurrence, now, rh, rm);
         dayScore = 0.9;
         if (h == null) timeScore = 0.45;
       } else if (st.anchorDate) {
         if (h == null) { h = 9; m = 0; timeScore = 0.45; }
         date = setTime(st.anchorDate, h, m);
+        // "Friday", said on a Friday, used to mean 9am THAT morning — a reminder created
+        // in the past, which fires the instant it is saved. A bare weekday naming today
+        // means today only while the hour she gave is still ahead of us; otherwise she
+        // meant the one coming round again.
+        if (st.bareWeekdayToday && date.getTime() <= now.getTime()) {
+          date = addDays(date, 7);
+          weekdayRolled = true;
+        }
         if (st.dayKind !== 'past' && date.getTime() < now.getTime()) past = true;
       } else if (h != null) {
         // bare time, no date: roll to tomorrow if it has already gone by today
@@ -7745,6 +7834,8 @@ window.PB = window.PB || {};
       hasDay: !!st.anchorDate || st.hasOffset || !!st.recurrence,
       dayKind: st.dayKind,
       rolled: rolled,
+      weekdayRolled: weekdayRolled,
+      weekdayName: st.bareWeekdayDow == null ? null : DOW_LONG[st.bareWeekdayDow],
       past: past,
       unresolvedAnchor: st.unresolvedAnchor,
       ambiguous: st.ambiguous,
@@ -7753,14 +7844,27 @@ window.PB = window.PB || {};
     };
   }
 
-  /* Public: exactly the contract shape. */
+  /* Public: the contract shape, plus two additive flags.
+   *
+   * hasTime is the difference between "she told me 3pm" and "I picked 9am because she
+   * only said tomorrow". Reminders needs it to say so out loud in the confirm-back —
+   * it used to guess from a midnight due date, but we default a dateless day to 09:00
+   * before we hand over, so the guess never fired and BEE never owned up. Additive
+   * only: date/text/confidence/recurrence are unchanged. */
   function parseDateTime(text, now) {
     try {
       var n = now instanceof Date && !isNaN(now.getTime()) ? now : defaultNow();
       var r = scanDateTime(text, n);
-      return { date: r.date, text: r.text, confidence: r.confidence, recurrence: r.recurrence };
+      return {
+        date: r.date,
+        text: r.text,
+        confidence: r.confidence,
+        recurrence: r.recurrence,
+        hasTime: !!r.hasTime,          // an hour came from her words, not from us
+        hasDate: !!r.hasDay            // a day came from her words, not from us
+      };
     } catch (e) {
-      return { date: null, text: null, confidence: 0, recurrence: null };
+      return { date: null, text: null, confidence: 0, recurrence: null, hasTime: false, hasDate: false };
     }
   }
 
@@ -8239,6 +8343,14 @@ window.PB = window.PB || {};
       if (!dt.hasTime) {
         return 'Got it — ' + quoted + '. What time works?';
       }
+      // She named today's weekday but an hour that's already gone. Rather than fire the
+      // moment it's saved, it's set a week out — and she gets told, because a week off
+      // is a big enough difference to be worth one question.
+      if (dt.weekdayRolled) {
+        var wd = dt.weekdayName || 'that day';
+        return 'It\'s already ' + wd + ' and that time\'s gone, so I\'ve set it for ' + wd +
+          ' next week. Want it sooner?';
+      }
       if (dt.ambiguous || dt.confidence < 0.5) {
         return 'I heard "' + (dt.text || raw) + '" — which day and time did you mean?';
       }
@@ -8283,7 +8395,9 @@ window.PB = window.PB || {};
   function emptyEntities() {
     return {
       task: null, datetime: null, datetimeText: null, recurrence: null,
-      person: null, place: null, topic: null, brand: null
+      person: null, place: null, topic: null, brand: null,
+      // additive: did the hour / the day come from her, or from us?
+      hasTime: false, hasDate: false
     };
   }
 
@@ -8339,6 +8453,8 @@ window.PB = window.PB || {};
         entities.datetime = dt.date ? dt.date.toISOString() : null;
         entities.datetimeText = dt.text;
         entities.recurrence = dt.recurrence;
+        entities.hasTime = !!dt.hasTime;
+        entities.hasDate = !!dt.hasDay;
       }
 
       entities.task = cleanTask(trimmed, dt);
@@ -8461,6 +8577,31 @@ window.PB = window.PB || {};
         { t: 'remind me every morning to drink water', i: 'reminder.create', d: at(1, 9, 0), r: 'daily' },
         { t: 'remind me weekly to back up my footage', i: 'reminder.create', d: at(7, 9, 0), r: 'weekly' },
         { t: 'remind me every other week to deep clean the brushes', i: 'reminder.create', r: 'biweekly' },
+        // --- D1: a bare weekday that names TODAY (NOW is a Wednesday, 10:00) ---
+        // still ahead of us today -> today
+        { t: 'remind me to film wednesday at 2pm', i: 'reminder.create', d: at(0, 14, 0), clarify: false },
+        // already gone today -> next week, and say so rather than fire instantly
+        { t: 'remind me to film wednesday at 8am', i: 'reminder.create', d: at(7, 8, 0), clarify: true },
+        // no time at all -> next week at the assumed hour, and ask for the time
+        { t: 'remind me to call the studio on wednesday', i: 'reminder.create', d: at(7, 9, 0), clarify: true },
+        // the neighbours it must not disturb
+        { t: 'remind me to film thursday at 8am', i: 'reminder.create', d: at(1, 8, 0) },
+        { t: 'remind me to film next wednesday at 8am', i: 'reminder.create', d: at(7, 8, 0) },
+        // --- D2: a bare hour on a REPEATING rule means the same thing whenever it's said.
+        // NOW is 10:00, so a wall-clock reading would make all three of these 8/9/10 pm. ---
+        { t: 'remind me every weekday at 8 to take my vitamins', i: 'reminder.create', d: at(1, 8, 0), r: 'weekly', days: [1, 2, 3, 4, 5] },
+        { t: 'remind me every day at 9 to drink water', i: 'reminder.create', d: at(1, 9, 0), r: 'daily' },
+        { t: 'remind me every monday at 10 to plan the week', i: 'reminder.create', d: at(5, 10, 0), r: 'weekly', days: [1] },
+        { t: 'remind me every day at 4 to stretch', i: 'reminder.create', d: at(0, 16, 0), r: 'daily' },  // 1..5 stays afternoon
+        // ...while a ONE-OFF still resolves against the clock, as it should
+        { t: 'remind me to stretch at 8', i: 'reminder.create', d: at(0, 20, 0) },
+        // --- D3: a monthly rule keeps the day of the month it was set for ---
+        { t: 'remind me every month on the 31st at 9am to pay rent', i: 'reminder.create', d: '2026-08-31 09:00', r: 'monthly' },
+        // --- D4: did she give us the hour, or did we pick it? ---
+        { t: 'remind me to pay the invoice tomorrow', i: 'reminder.create', ht: false, hd: true },
+        { t: 'remind me to pay the invoice tomorrow at 4pm', i: 'reminder.create', ht: true, hd: true },
+        { t: 'remind me to check the oven in 20 min', i: 'reminder.create', ht: true, hd: true },
+        { t: 'remind me to call the dentist about the crown', i: 'reminder.create', ht: false, hd: false },
         // --- no time -> must ask ---
         { t: 'remind me to call the dentist', i: 'reminder.create', d: null, clarify: true, task: 'Call the dentist' },
         { t: 'remind me tomorrow', i: 'reminder.create', d: at(1, 9, 0), clarify: true },
@@ -8528,6 +8669,12 @@ window.PB = window.PB || {};
         if (typeof c.clarify !== 'undefined' && got.needsClarification !== c.clarify) {
           problems.push('needsClarification=' + got.needsClarification + ' want ' + c.clarify);
         }
+        if (typeof c.ht !== 'undefined' && got.entities.hasTime !== c.ht) {
+          problems.push('hasTime=' + got.entities.hasTime + ' want ' + c.ht);
+        }
+        if (typeof c.hd !== 'undefined' && got.entities.hasDate !== c.hd) {
+          problems.push('hasDate=' + got.entities.hasDate + ' want ' + c.hd);
+        }
 
         var ok = problems.length === 0;
         if (ok) passed++; else failed++;
@@ -8541,6 +8688,87 @@ window.PB = window.PB || {};
           problems: problems
         });
       }
+
+      /* ---- checks that need their own clock, or that look past parse() ---- */
+
+      function check(name, fn) {
+        var problems = [];
+        try {
+          var p = fn();
+          if (p) problems = (typeof p === 'string') ? [p] : p;
+        } catch (err) { problems = ['threw: ' + (err && err.message)]; }
+        var ok = problems.length === 0;
+        if (ok) passed++; else failed++;
+        results.push({ text: name, ok: ok, problems: problems });
+      }
+
+      // D4 — the flags must survive the parseDateTime boundary, and the four
+      // contract fields must still be there, untouched.
+      check('parseDateTime keeps its shape and adds hasTime/hasDate', function () {
+        var p = [];
+        var a = parseDateTime('tomorrow', NOW);
+        var b = parseDateTime('tomorrow at 4pm', NOW);
+        var keys = ['date', 'text', 'confidence', 'recurrence'];
+        for (var i = 0; i < keys.length; i++) {
+          if (!(keys[i] in a)) p.push('missing contract field ' + keys[i]);
+        }
+        if (a.hasTime !== false) p.push('"tomorrow" hasTime=' + a.hasTime + ' want false');
+        if (a.hasDate !== true) p.push('"tomorrow" hasDate=' + a.hasDate + ' want true');
+        if (b.hasTime !== true) p.push('"tomorrow at 4pm" hasTime=' + b.hasTime + ' want true');
+        if (fmt(a.date) !== at(1, 9, 0)) p.push('"tomorrow" date=' + fmt(a.date));
+        return p;
+      });
+
+      // D1 — every weekday, named on itself, an hour after the hour it names.
+      check('a bare weekday naming today never lands in the past', function () {
+        var p = [];
+        for (var dow = 0; dow < 7; dow++) {
+          // a clock that IS this weekday, at 14:00
+          var day = addDays(NOW, (dow - NOW.getDay() + 7) % 7);
+          var clockNow = setTime(day, 14, 0);
+          var r = parseDateTime(DOW_LONG[dow] + ' at 8am', clockNow);
+          if (!r.date) { p.push(DOW_LONG[dow] + ': no date'); continue; }
+          if (r.date.getTime() <= clockNow.getTime()) {
+            p.push(DOW_LONG[dow] + ' at 8am -> ' + fmt(r.date) + ', already past');
+          }
+          if (fmt(r.date) !== fmt(setTime(addDays(day, 7), 8, 0))) {
+            p.push(DOW_LONG[dow] + ' at 8am -> ' + fmt(r.date) + ' want ' + fmt(setTime(addDays(day, 7), 8, 0)));
+          }
+          // and the same weekday with an hour still ahead must stay today
+          var r2 = parseDateTime(DOW_LONG[dow] + ' at 8pm', clockNow);
+          if (fmt(r2.date) !== fmt(setTime(day, 20, 0))) {
+            p.push(DOW_LONG[dow] + ' at 8pm -> ' + fmt(r2.date) + ' want ' + fmt(setTime(day, 20, 0)));
+          }
+        }
+        return p;
+      });
+
+      // D2 — the same recurring sentence at four different hours of the day.
+      check('a recurring bare hour does not depend on when it was typed', function () {
+        var p = [];
+        var hours = [1, 7, 9, 13, 19, 23];
+        for (var i = 0; i < hours.length; i++) {
+          var clockNow = setTime(NOW, hours[i], 0);
+          var r = parseDateTime('every weekday at 8', clockNow);
+          if (!r.recurrence || r.recurrence.time !== '08:00') {
+            p.push('typed at ' + hours[i] + ':00 -> recurrence.time=' +
+              (r.recurrence ? r.recurrence.time : 'null') + ' want 08:00');
+          }
+        }
+        return p;
+      });
+
+      // D3 — month rollover from a 31st, through a short month.
+      check('a monthly rule clamps instead of overflowing', function () {
+        var p = [];
+        var jan31 = new Date(2027, 0, 31, 10, 0, 0, 0);
+        var r = parseDateTime('every month at 9am', jan31);
+        if (fmt(r.date) !== '2027-02-28 09:00') p.push('31 Jan + 1 month -> ' + fmt(r.date) + ' want 2027-02-28 09:00');
+        if (!r.recurrence || r.recurrence.dayOfMonth !== 31) {
+          p.push('dayOfMonth=' + (r.recurrence && r.recurrence.dayOfMonth) + ' want 31 (the anchor, so it can go back to the 31st)');
+        }
+        return p;
+      });
     } catch (e) {
       results.push({ text: '(test harness)', ok: false, problems: ['threw: ' + (e && e.message)] });
       failed++;
@@ -11881,8 +12109,12 @@ try {
  *   get(id), count(), deliveryStatus()
  *
  * Reliability contract with the user:
+ *   - Nothing is confirmed unless it is actually stored. create() writes, reads back, and
+ *     only then confirms; if the write failed it says so instead of pretending.
  *   - Every created reminder produces a plain-language confirm-back naming the task AND the
  *     resolved absolute time. Never echoes the vague phrase back.
+ *   - If BEE chose the hour rather than being told it, the confirm-back says so.
+ *   - No reminder is ever created in the past by our own arithmetic.
  *   - A reminder that comes due while the app was closed still fires on next open (catch-up).
  *   - We tell the truth about whether we can actually reach her — but quietly, at the foot
  *     of the list, not as a status dashboard above the one button she came here to press.
@@ -12045,7 +12277,9 @@ try {
   var lastTickAt = null;        // Date — last time tick() ran (any source)
   var lastExternalTickAt = null;// Date — last time app.js drove us
   var selfTimer = null;
-  var didCatchUp = false;
+  // Set once at load and consumed by whichever tick runs first — app.js drives one the
+  // instant it boots, so a catch-up that waits on its own timer never gets there first.
+  var pendingCatchUp = false;
 
   function load() {
     var raw = [];
@@ -12056,7 +12290,11 @@ try {
     items = [];
     for (var i = 0; i < raw.length; i++) {
       var r = normalize(raw[i]);
-      if (r) items.push(r);
+      if (!r) continue;
+      // It came out of storage, so it is stored — whatever a past session thought.
+      var u = r.tags.indexOf(UNSAVED_TAG);
+      if (u !== -1) r.tags.splice(u, 1);
+      items.push(r);
     }
     try {
       var lt = PB.store && PB.store.get ? PB.store.get(KEY_LASTTICK, null) : null;
@@ -12064,8 +12302,43 @@ try {
     } catch (e) {}
   }
 
+  // Storage can be full, blocked (private mode, cookies off) or simply absent. Swallowing
+  // that and carrying on is how a reminder ends up confirmed but not stored — the exact
+  // failure this whole module exists to prevent. So: say whether the write landed.
   function save() {
-    try { if (PB.store && PB.store.set) PB.store.set(KEY, items); } catch (e) {}
+    try {
+      if (!(PB.store && PB.store.set)) return false;
+      var ok = PB.store.set(KEY, items);
+      return ok !== false;   // older core.js returned undefined on success
+    } catch (e) { return false; }
+  }
+
+  // The only proof that counts: read it back out of storage.
+  function isStored(id) {
+    try {
+      if (!(PB.store && PB.store.get)) return false;
+      var raw = PB.store.get(KEY, null);
+      if (!raw || Object.prototype.toString.call(raw) !== '[object Array]') return false;
+      for (var i = 0; i < raw.length; i++) {
+        if (raw[i] && raw[i].id === id) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  var warnedSaveFailed = false;
+
+  // Anything that changes a reminder goes through here, so nothing else in this file
+  // can quietly assume a write succeeded.
+  function saveOrWarn() {
+    var ok = save();
+    if (!ok && !warnedSaveFailed) {
+      warnedSaveFailed = true;
+      toast('I couldn’t save that to this device — storage is full or blocked. ' +
+        'Your reminders will work until you close the app, but they won’t come back after.', 7000);
+    }
+    if (ok) warnedSaveFailed = false;
+    return ok;
   }
 
   function iso(v) {
@@ -12144,6 +12417,38 @@ try {
   // A bare date ("tomorrow") parses to midnight. Midnight is a terrible time to be
   // reminded of anything, so we pick a sensible hour and SAY SO in the confirm-back.
   var ASSUMED_TAG = 'time:assumed';
+  var UNSAVED_TAG = 'storage:failed';
+
+  // Did SHE give us an hour, or did we pick one? nlu.js knows — it now hands the answer
+  // over as hasTime. Everything else is a fallback for callers that don't pass it.
+  var RE_SAID_TIME = /\d\s*(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|morning|evening|tonight|afternoon|lunch|bed/i;
+
+  function probeHasTime(phrase) {
+    try {
+      if (PB.nlu && PB.nlu.parseDateTime) {
+        var p = PB.nlu.parseDateTime(phrase, now());
+        if (p && typeof p.hasTime === 'boolean') return p.hasTime;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // Tri-state resolution, most trustworthy source first.
+  function saidATime(obj, d, recSaidTime) {
+    // The parser's answer wins, including over a recurrence rule that carries a time —
+    // "every Monday" arrives with time 09:00 already filled in by us, and that is exactly
+    // the case she most needs told about.
+    if (typeof obj.hasTime === 'boolean') return obj.hasTime;
+    if (recSaidTime) return true;
+    var phrase = String(obj.dueText || '').trim();
+    if (phrase) {
+      var probed = probeHasTime(phrase);
+      if (probed !== null) return probed;
+      return RE_SAID_TIME.test(phrase);
+    }
+    // No phrase at all — a caller handing us a raw Date. Midnight is the only tell.
+    return !(d && looksLikeMidnight(d));
+  }
 
   function applyDefaultHour(d) {
     var n = now();
@@ -12247,6 +12552,51 @@ try {
     return null;
   }
 
+  /* ------------------------------------------- calendar-safe date arithmetic */
+
+  function daysInMonth(y, mo) { return new Date(y, mo + 1, 0).getDate(); }
+
+  // The day of the month this series is anchored to. Kept on the rule itself so a
+  // clamped occurrence (28 Feb) can still roll back out to the 31st next month.
+  function anchorDom(rec, base) {
+    var n = rec ? parseInt(rec.dayOfMonth, 10) : NaN;
+    if (n >= 1 && n <= 31) return n;
+    return base.getDate();
+  }
+
+  function addMonthsClamped(d, n, dom) {
+    var target = dom || d.getDate();
+    var x = new Date(d.getTime());
+    x.setDate(1);                                   // never overflow while the month moves
+    x.setFullYear(x.getFullYear(), x.getMonth() + n, 1);
+    x.setDate(Math.min(target, daysInMonth(x.getFullYear(), x.getMonth())));
+    return x;
+  }
+
+  function addYearsClamped(d, n, dom) {
+    var target = dom || d.getDate();
+    var mo = d.getMonth();
+    var x = new Date(d.getTime());
+    x.setDate(1);
+    x.setFullYear(x.getFullYear() + n, mo, 1);
+    x.setDate(Math.min(target, daysInMonth(x.getFullYear(), mo)));
+    return x;
+  }
+
+  // Stamp the anchor day onto a month/year rule the first time we see it, so the series
+  // has something to return to after a short month clamps it.
+  function stampAnchorDom(rec, dueIso) {
+    if (!rec || !dueIso) return rec;
+    var f = String(rec.freq || '').toLowerCase();
+    if (f !== 'monthly' && f !== 'month' && f !== 'yearly' && f !== 'year') return rec;
+    var n = parseInt(rec.dayOfMonth, 10);
+    if (n >= 1 && n <= 31) return rec;
+    var d = new Date(dueIso);
+    if (isNaN(d.getTime())) return rec;
+    rec.dayOfMonth = d.getDate();
+    return rec;
+  }
+
   // Next occurrence strictly after `from`, keeping the original time of day.
   function nextOccurrence(r, from) {
     var rec = r.recurrence;
@@ -12259,12 +12609,19 @@ try {
     var next = new Date(base.getTime());
     var guard = 0;
 
+    // setMonth(+1) and setFullYear(+1) OVERFLOW. A reminder set for the 31st becomes the
+    // 3rd of the month after next and never comes back; 29 Feb becomes 1 March. Both are
+    // silent, and both mean the reminder stops landing on the day it was set for. Clamp to
+    // the last real day of the target month instead, and roll from the day-of-month she
+    // originally chose so a short month can't drag the whole series along with it.
     if (freq === 'monthly' || freq === 'month') {
-      while (next.getTime() <= anchor.getTime() && guard++ < 60) next.setMonth(next.getMonth() + 1);
+      var mdom = anchorDom(rec, base);
+      while (next.getTime() <= anchor.getTime() && guard++ < 120) next = addMonthsClamped(next, 1, mdom);
       return next;
     }
     if (freq === 'yearly' || freq === 'year') {
-      while (next.getTime() <= anchor.getTime() && guard++ < 20) next.setFullYear(next.getFullYear() + 1);
+      var ydom = anchorDom(rec, base);
+      while (next.getTime() <= anchor.getTime() && guard++ < 40) next = addYearsClamped(next, 1, ydom);
       return next;
     }
 
@@ -12316,6 +12673,18 @@ try {
     if (!task) return '';
     var d = effDue(r);
 
+    // Nothing may claim to be saved unless it is. If the write didn't land, that is the
+    // whole message — no "Got it", no time read back as though it were a promise.
+    if (hasTag(r, UNSAVED_TAG)) {
+      var head = 'I couldn’t save ' + quote(task) + ' — storage on this device is full or blocked, ' +
+        'so it isn’t written down.';
+      if (d) {
+        head += ' I’ll still nudge you ' + dayPhrase(d) + ' at ' + compactTime(d) +
+          ' if you leave the app open, but it won’t survive a restart.';
+      }
+      return head + ' Freeing up some space and telling me again should fix it.';
+    }
+
     if (!d) {
       return 'Saved: ' + quote(task) + '. There’s no time on it, so I won’t be able to nudge you — ' +
         'tell me when and I’ll set one. Something like “tomorrow at 3” works.';
@@ -12357,16 +12726,20 @@ try {
       dueIso = alignToRecurrence(dueIso, rec);
       // We invented the hour for it, so own up to that in the confirm-back.
       if (!recSaidTime && !hadDate && dueIso && tags.indexOf(ASSUMED_TAG) === -1) tags.push(ASSUMED_TAG);
+      stampAnchorDom(rec, dueIso);
     }
 
     if (dueIso) {
       var d = new Date(dueIso);
-      var rawWhen = String(obj.dueText || '');
-      var saidATime = recSaidTime ||
-        /\d\s*(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|morning|evening|tonight|afternoon|lunch|bed/i.test(rawWhen);
-      if (looksLikeMidnight(d) && !saidATime) {
-        d = applyDefaultHour(d);
-        dueIso = d.toISOString();
+      // nlu already defaults a dateless day to 09:00 before it reaches us, so a midnight
+      // due date is no longer the tell that we picked the hour — this used to be the only
+      // trigger, which meant the "I picked a time for you" line never once got said on the
+      // chat path. Ask the parser instead, and disclose whenever the answer is us.
+      if (!saidATime(obj, d, recSaidTime)) {
+        if (looksLikeMidnight(d)) {
+          d = applyDefaultHour(d);
+          dueIso = d.toISOString();
+        }
         if (tags.indexOf(ASSUMED_TAG) === -1) tags.push(ASSUMED_TAG);
       }
     }
@@ -12388,7 +12761,20 @@ try {
     if (!r) return null;
 
     items.push(r);
-    save();
+
+    // Write it, then read it back. A reminder is a promise; the promise isn't made until
+    // it is actually on disk, and nothing downstream may say "Got it" until this passes.
+    var stored = save() && isStored(r.id);
+    if (!stored) {
+      if (r.tags.indexOf(UNSAVED_TAG) === -1) r.tags.push(UNSAVED_TAG);
+      // It stays in memory so it can still fire while the app is open — but formatConfirm
+      // will tell her plainly that it isn't written down, and the row is marked too.
+      emit('reminder:savefailed', r);
+      schedule();
+      repaint();
+      return r;
+    }
+
     emit('reminder:created', r);
     schedule();
     maybeAskNotify();
@@ -12406,6 +12792,8 @@ try {
       due: p.due,
       dueText: p.dueText,
       recurrence: p.recurrence,
+      hasTime: typeof p.hasTime === 'boolean' ? p.hasTime : undefined,
+      hasDate: typeof p.hasDate === 'boolean' ? p.hasDate : undefined,
       source: source || 'chat'
     });
   }
@@ -12420,10 +12808,13 @@ try {
       if (tagIdx !== -1) r.tags.splice(tagIdx, 1);
       if (newDue) {
         var d = new Date(newDue);
-        var saidATime = /\d\s*(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|morning|evening|tonight|afternoon/i.test(String(patch.dueText || ''));
-        if (looksLikeMidnight(d) && !saidATime) {
-          d = applyDefaultHour(d);
-          newDue = d.toISOString();
+        var told = saidATime({ dueText: patch.dueText, hasTime: patch.hasTime }, d,
+          !!recTimeParts('recurrence' in patch ? patch.recurrence : r.recurrence));
+        if (!told) {
+          if (looksLikeMidnight(d)) {
+            d = applyDefaultHour(d);
+            newDue = d.toISOString();
+          }
           r.tags.push(ASSUMED_TAG);
         }
       }
@@ -12451,9 +12842,15 @@ try {
     // Same rule as create: a repeating reminder must always hold a concrete next firing time.
     if (r.recurrence && ('due' in patch || 'recurrence' in patch)) {
       r.due = alignToRecurrence(r.due, r.recurrence);
+      stampAnchorDom(r.recurrence, r.due);
       if (r.due && new Date(r.due).getTime() > now().getTime()) r.fired = false;
     }
-    save();
+    if (saveOrWarn() && isStored(r.id)) {
+      var uidx = r.tags.indexOf(UNSAVED_TAG);
+      if (uidx !== -1) r.tags.splice(uidx, 1);
+    } else if (r.tags.indexOf(UNSAVED_TAG) === -1) {
+      r.tags.push(UNSAVED_TAG);
+    }
     emit('reminder:updated', r);
     schedule();
     repaint();
@@ -12475,10 +12872,11 @@ try {
         r.snoozedUntil = null;
         r.fired = false;
         r.completedAt = null;
-        save();
+        var rolled = saveOrWarn();
         schedule();
         repaint();
-        toast('Done. Next one ' + dayPhrase(nxt) + ' at ' + compactTime(nxt) + '.');
+        // Only promise the next one if the move is actually written down.
+        if (rolled) toast('Done. Next one ' + dayPhrase(nxt) + ' at ' + compactTime(nxt) + '.');
         haptic();
         return r;
       }
@@ -12486,7 +12884,7 @@ try {
 
     r.completedAt = now().toISOString();
     r.snoozedUntil = null;
-    save();
+    saveOrWarn();
     emit('reminder:completed', r);
     dismissBannerFor(r.id);
     schedule();
@@ -12501,7 +12899,7 @@ try {
     r.completedAt = null;
     var d = effDue(r);
     r.fired = !!(d && d.getTime() <= now().getTime());
-    save();
+    saveOrWarn();
     emit('reminder:updated', r);
     schedule();
     repaint();
@@ -12511,19 +12909,25 @@ try {
   function snooze(id, minutes) {
     var r = byId(id);
     if (!r) return null;
+    // Snoozing used to clear completedAt, which quietly resurrected a finished reminder —
+    // she'd be nudged again about something she'd already done. Snoozing something that's
+    // done is a no-op, and we say why rather than doing something she didn't ask for.
+    if (r.completedAt) {
+      toast('That one’s already done, so there’s nothing to snooze. Reopen it if you want another nudge.');
+      return r;
+    }
     var m = parseInt(minutes, 10);
     if (!isFinite(m) || m <= 0) m = 10;
     var until = addMinutes(now(), m);
     until.setSeconds(0, 0);
     r.snoozedUntil = until.toISOString();
     r.fired = false;
-    r.completedAt = null;
-    save();
+    var ok = saveOrWarn();
     emit('reminder:snoozed', r);
     dismissBannerFor(r.id);
     schedule();
     repaint();
-    toast('Snoozed. Back at ' + compactTime(until) + '.');
+    if (ok) toast('Snoozed. Back at ' + compactTime(until) + '.');
     return r;
   }
 
@@ -12531,7 +12935,7 @@ try {
     for (var i = 0; i < items.length; i++) {
       if (items[i].id === id) {
         var r = items.splice(i, 1)[0];
-        save();
+        saveOrWarn();
         emit('reminder:removed', r);
         dismissBannerFor(id);
         schedule();
@@ -12754,6 +13158,10 @@ try {
 
   function tick(fromApp) {
     var n = now();
+    // The first tick of a session is the catch-up, whoever drives it.
+    var catching = pendingCatchUp;
+    var since = catching && lastTickAt ? new Date(lastTickAt.getTime()) : null;
+    if (catching) pendingCatchUp = false;
     lastTickAt = n;
     if (fromApp !== false) lastExternalTickAt = n;
     try { if (PB.store && PB.store.set) PB.store.set(KEY_LASTTICK, n.toISOString()); } catch (e) {}
@@ -12771,13 +13179,17 @@ try {
     }
 
     if (fired.length) {
-      save();
+      saveOrWarn();
       for (var j = 0; j < fired.length; j++) {
         emit('reminder:fired', fired[j]);
         osNotify(fired[j]);
       }
-      if (didCatchUp && fired.length > 2) {
-        showSummaryBanner(fired);
+      // A pile that landed while the app was shut gets one summary rather than a stack of
+      // banners. This branch used to be dead twice over: catchUp() only delegated here when
+      // at most one thing was pending, and app.js's boot-time tick beat catchUp() to the
+      // firing anyway. Now the first tick of the session IS the catch-up, so it's real.
+      if (catching && fired.length > 1) {
+        showSummaryBanner(fired, since);
       } else {
         for (var k = 0; k < fired.length && k < 3; k++) showBanner(fired[k]);
         if (fired.length > 3) showSummaryBanner(fired.slice(3));
@@ -12792,24 +13204,11 @@ try {
   }
 
   // Anything that came due while the app was closed still gets delivered, once, on open.
+  // One path only: tick() does the firing, the saving, the notifying and the painting, and
+  // consumes pendingCatchUp to decide between a stack of banners and a single summary.
+  // This call is the backstop for when nothing else has ticked yet.
   function catchUp() {
-    var missedSince = lastTickAt ? new Date(lastTickAt.getTime()) : null;
-    didCatchUp = true;
-    var pending = [];
-    for (var i = 0; i < items.length; i++) {
-      var r = items[i];
-      if (!isOpen(r) || r.fired) continue;
-      var d = effDue(r);
-      if (d && d.getTime() <= now().getTime()) pending.push(r);
-    }
-    if (pending.length > 1) {
-      for (var j = 0; j < pending.length; j++) { pending[j].fired = true; emit('reminder:fired', pending[j]); }
-      save();
-      showSummaryBanner(pending, missedSince);
-    } else {
-      tick(false);
-    }
-    didCatchUp = false;
+    tick(false);
     lastTickAt = now();
     try { if (PB.store && PB.store.set) PB.store.set(KEY_LASTTICK, lastTickAt.toISOString()); } catch (e) {}
     updateDelivery();
@@ -12931,7 +13330,10 @@ try {
 
   // Returns {task, due(ISO|null), dueText, recurrence, confidence}
   function parseText(text) {
-    var out = { task: String(text || '').trim(), due: null, dueText: null, recurrence: null, confidence: 0 };
+    var out = {
+      task: String(text || '').trim(), due: null, dueText: null, recurrence: null,
+      confidence: 0, hasTime: null, hasDate: null
+    };
     if (!out.task) return out;
 
     var parsed = null;
@@ -12945,6 +13347,8 @@ try {
       if (e.datetimeText) out.dueText = String(e.datetimeText);
       if (e.recurrence) out.recurrence = e.recurrence;
       if (e.task && String(e.task).trim()) out.task = String(e.task).trim();
+      if (typeof e.hasTime === 'boolean') out.hasTime = e.hasTime;
+      if (typeof e.hasDate === 'boolean') out.hasDate = e.hasDate;
       out.confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
     }
 
@@ -12956,6 +13360,8 @@ try {
             if (dt.date) out.due = iso(dt.date);
             if (dt.text) out.dueText = String(dt.text);
             if (dt.recurrence) out.recurrence = out.recurrence || dt.recurrence;
+            if (typeof dt.hasTime === 'boolean') out.hasTime = dt.hasTime;
+            if (typeof dt.hasDate === 'boolean') out.hasDate = dt.hasDate;
             if (typeof dt.confidence === 'number' && dt.confidence > out.confidence) out.confidence = dt.confidence;
           }
         }
@@ -13043,13 +13449,13 @@ try {
     foot.textContent = 'I’ll read it back to you before it counts.';
     wrap.appendChild(foot);
 
-    var state = { task: '', due: null, dueText: null, recurrence: null };
+    var state = { task: '', due: null, dueText: null, recurrence: null, hasTime: null, hasDate: null };
     var t = null;
 
     function run() {
       var raw = input.value.trim();
       if (!raw) {
-        state = { task: '', due: null, dueText: null, recurrence: null };
+        state = { task: '', due: null, dueText: null, recurrence: null, hasTime: null, hasDate: null };
         preview.className = 'rm-preview';
         pText.textContent = 'Type it the way you’d say it.';
         saveBtn.disabled = true;
@@ -13060,16 +13466,18 @@ try {
       state.due = p.due;
       state.dueText = p.dueText;
       state.recurrence = p.recurrence;
+      state.hasTime = p.hasTime;
+      state.hasDate = p.hasDate;
       saveBtn.disabled = false;
 
       if (p.due) {
         var d = new Date(p.due);
-        if (looksLikeMidnight(d) && !/\d\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|morning|evening|tonight|afternoon/i.test(String(p.dueText || ''))) {
-          d = applyDefaultHour(d);
-        }
+        var told = saidATime({ dueText: p.dueText, hasTime: p.hasTime }, d, !!recTimeParts(p.recurrence));
+        if (looksLikeMidnight(d) && !told) d = applyDefaultHour(d);
         preview.className = 'rm-preview is-ok';
         var rec = p.recurrence ? recurrencePhrase(p.recurrence) + ' · next ' : '';
-        pText.textContent = rec + dayPhrase(d) + ' at ' + compactTime(d) + ' · ' + relPhrase(d);
+        pText.textContent = rec + dayPhrase(d) + ' at ' + compactTime(d) + ' · ' + relPhrase(d) +
+          (told ? '' : ' · time I picked');
       } else {
         preview.className = 'rm-preview is-vague';
         pText.textContent = 'No time in there yet — I’ll file it under “No time set” and won’t be able to nudge you.';
@@ -13098,7 +13506,8 @@ try {
           text: state.task || raw,
           due: state.due,
           dueText: state.dueText,
-          recurrence: state.recurrence
+          recurrence: state.recurrence,
+          hasTime: typeof state.hasTime === 'boolean' ? state.hasTime : undefined
         });
       } else {
         r = create({
@@ -13106,6 +13515,8 @@ try {
           due: state.due,
           dueText: state.dueText,
           recurrence: state.recurrence,
+          hasTime: typeof state.hasTime === 'boolean' ? state.hasTime : undefined,
+          hasDate: typeof state.hasDate === 'boolean' ? state.hasDate : undefined,
           source: 'manual'
         });
       }
@@ -13387,6 +13798,9 @@ try {
     if (hasTag(r, ASSUMED_TAG) && isOpen(r)) {
       meta.appendChild(el('span', 'rm-tag rm-tag-soft', 'time I picked'));
     }
+    if (hasTag(r, UNSAVED_TAG)) {
+      meta.appendChild(el('span', 'rm-tag', 'not saved to this device'));
+    }
     if (r.source === 'chat' || r.source === 'voice') {
       meta.appendChild(el('span', 'rm-tag rm-tag-soft', r.source === 'voice' ? 'from voice' : 'from chat'));
     }
@@ -13654,10 +14068,12 @@ try {
 
   function boot() {
     try { load(); } catch (e) { items = []; }
+    pendingCatchUp = true;   // armed here, consumed by the first tick from any source
     try { wire(); } catch (e) {}
-    // Deliver anything missed while the app was closed, once other modules have loaded.
+    // Backstop: if nothing has driven a tick within the first moments, do it ourselves so
+    // anything missed while the app was closed still lands.
     setTimeout(function () {
-      try { catchUp(); } catch (e) {}
+      try { if (pendingCatchUp) catchUp(); } catch (e) {}
     }, 400);
     try { schedule(); } catch (e) {}
   }
