@@ -5239,7 +5239,7 @@ img { max-width: 100%; display: block; }
 </div>
 
 <script>
-window.PB_BUILD = "2026-08-14 11:24 UTC";
+window.PB_BUILD = "2026-08-14 12:08 UTC";
 
 /* ===== js/core.js ===== */
 try {
@@ -5564,6 +5564,72 @@ try {
 })();
 
 } catch (e) { console.error('[PB] module failed: js/core.js', e); }
+
+/* ===== js/features.js ===== */
+try {
+/* Personalbee — what's switched on.
+ *
+ * Reminders ship first; everything else comes back one at a time. The code for the
+ * other features stays exactly where it is — flipping a flag here is the whole of
+ * turning one back on, so nothing has to be rebuilt or un-deleted.
+ *
+ * Loads before every module that needs to ask.
+ */
+(function () {
+  'use strict';
+  var PB = (window.PB = window.PB || {});
+
+  var DEFAULTS = {
+    reminders: true,    // feature #1
+    moments: false,     // photo capture
+    memory: false,      // things you tell BEE about yourself
+    assistant: false,   // schedule, contacts, brands, priorities — the persona knowledge base
+    privacy: true       // erase + notification permission: part of reminders working honestly
+  };
+
+  var flags = null;
+
+  function load() {
+    if (flags) return flags;
+    flags = {};
+    var saved = null;
+    try { if (PB.store) saved = PB.store.get('features', null); } catch (e) {}
+    Object.keys(DEFAULTS).forEach(function (k) {
+      flags[k] = (saved && typeof saved[k] === 'boolean') ? saved[k] : DEFAULTS[k];
+    });
+    return flags;
+  }
+
+  PB.features = {
+    on: function (name) { return !!load()[name]; },
+    off: function (name) { return !load()[name]; },
+    all: function () { return JSON.parse(JSON.stringify(load())); },
+
+    // For turning one back on without a rebuild — from the console, or a settings row later.
+    set: function (name, value) {
+      load();
+      if (!(name in DEFAULTS)) return false;
+      flags[name] = !!value;
+      try { if (PB.store) PB.store.set('features', flags); } catch (e) {}
+      if (PB.bus) PB.bus.emit('features:changed', { name: name, value: !!value });
+      return true;
+    },
+    reset: function () {
+      flags = null;
+      try { if (PB.store) PB.store.del('features'); } catch (e) {}
+      return load();
+    },
+
+    // True when reminders are the only thing running — used to keep copy honest
+    // ("I only do reminders right now") rather than promising a whole assistant.
+    remindersOnly: function () {
+      var f = load();
+      return f.reminders && !f.moments && !f.memory && !f.assistant;
+    }
+  };
+})();
+
+} catch (e) { console.error('[PB] module failed: js/features.js', e); }
 
 /* ===== data/kb.js ===== */
 try {
@@ -6745,8 +6811,16 @@ try {
       '<circle cx="39" cy="36" r="7" fill="#fff" stroke="#e8c46b" stroke-width="1"/>' +
       '<circle cx="40.5" cy="37" r="3.4" fill="#1a1000"/><circle cx="41.6" cy="35.6" r="1.1" fill="#fff"/></svg>';
     step1.appendChild(bee);
+    var remindersOnly = false;
+    try {
+      remindersOnly = !!(PB.features && typeof PB.features.remindersOnly === 'function' &&
+        PB.features.remindersOnly());
+    } catch (e) {}
+
     step1.appendChild(el('h1', 'pbo-h1', 'Hello.'));
-    step1.appendChild(el('p', 'pbo-lede', "I'm BEE. I live on this phone and nowhere else."));
+    step1.appendChild(el('p', 'pbo-lede', remindersOnly
+      ? "I'm BEE. Right now I do one thing — I remember things for you, and I never forget to say them back."
+      : "I'm BEE. I live on this phone and nowhere else."));
 
     var label = el('label', 'pbo-label', 'What should I call you?');
     label.setAttribute('for', 'pbo-name');
@@ -6818,6 +6892,12 @@ try {
     next.addEventListener('click', function () {
       var n = input.value.trim();
       if (!n) return;
+      // With only reminders switched on there is no demo life to load, so the second
+      // step would be a choice between two identical outcomes.
+      if (PB.features && typeof PB.features.remindersOnly === 'function' && PB.features.remindersOnly()) {
+        finish('fresh');
+        return;
+      }
       hello2.textContent = 'Nice to meet you, ' + n.split(' ')[0] + '.';
       step1.classList.add('pbo-hidden');
       step2.classList.remove('pbo-hidden');
@@ -19627,6 +19707,28 @@ try {
 
     var lines = [head];
 
+    // Reminders-only build: the calendar isn't there to talk about, so open on what BEE
+    // can actually do rather than on an empty day.
+    if (PB.features && isFn(PB.features.remindersOnly) && PB.features.remindersOnly()) {
+      var open = openReminders();
+      var late = overdueReminders();
+      if (late.length) {
+        lines.push(late.length === 1
+          ? 'One thing is past due: ' + trim(late[0].text) + '.'
+          : late.length + ' things are past due — oldest is ' + trim(late[0].text) + '.');
+      } else if (open.length) {
+        var nx = open[0];
+        var nd = toDate(nx.due);
+        lines.push(nd
+          ? 'Next up: ' + trim(nx.text) + ', ' + fmtDay(nd) + ' at ' + fmtTime(nd) + '.'
+          : 'You\'ve got ' + open.length + ' on the list.');
+      } else {
+        lines.push('Nothing on your list yet. Tell me something you\'d rather not forget — ' +
+          'say it the way you\'d say it out loud, and I\'ll read the time back to you.');
+      }
+      return lines.join('\n');
+    }
+
     var plan = departurePlan();
     var ev = nextEvent(now());
     var evToday = ev && sameDay(toDate(ev.start), now());
@@ -19688,6 +19790,42 @@ try {
     return r;
   }
 
+  function featureOn(name) {
+    try {
+      if (PB.features && isFn(PB.features.on)) return PB.features.on(name);
+    } catch (e) {}
+    return true;   // no flags module: behave as before
+  }
+
+  // Which feature each intent belongs to. Anything not listed is always available —
+  // reminders, small talk, and BEE accounting for itself.
+  var INTENT_FEATURE = {
+    'photo.note': 'moments', 'photo.recall': 'moments',
+    'memory.recall': 'memory', 'memory.forget': 'memory',
+    'schedule.query': 'assistant', 'schedule.next': 'assistant',
+    'contact.find': 'assistant', 'brand.query': 'assistant',
+    'advice.priority': 'assistant'
+  };
+
+  var GATE_LINE = {
+    moments: 'Photos aren\'t switched on yet — that one comes later.',
+    memory: 'I\'m not keeping notes about you yet. Right now I only hold reminders.',
+    assistant: 'I can\'t see your calendar or contacts yet — that part isn\'t built.'
+  };
+
+  function featureGate(intent) {
+    var need = INTENT_FEATURE[intent];
+    if (!need || featureOn(need)) return null;
+    var line = GATE_LINE[need] || 'That part isn\'t switched on yet.';
+    return reply(
+      line + '\n\nWhat I can do properly is remind you about things — say it the way you\'d ' +
+      'say it out loud and I\'ll read the time back to you.',
+      [{ label: 'Remind me to…', send: 'Remind me to call the dentist tomorrow at 10am' },
+       { label: 'What\'s on my list?', send: 'What are my reminders?' }],
+      null, []
+    );
+  }
+
   function respond(input) {
     var text, parsed, history;
     try {
@@ -19721,9 +19859,16 @@ try {
 
     var intent = (parsed && parsed.intent) ? parsed.intent : 'unknown';
 
+    /* --- features that aren't shipped yet --- */
+    // Reminders ship first. Answering half of a question about a switched-off feature
+    // would be worse than declining: it teaches people to expect something that isn't
+    // there. Say what's on, plainly, and offer the thing that is.
+    var gated = featureGate(intent);
+    if (gated) return Promise.resolve(finalize(gated));
+
     /* --- absorb what she just told us --- */
     var learned = [];
-    if (!NO_LEARN[intent] && !state.pending) {
+    if (!NO_LEARN[intent] && !state.pending && featureOn('memory')) {
       try { learned = memLearn(text); } catch (e) { learned = []; }
     }
     try { noteSubjects(resolved, parsed); } catch (e) { }
@@ -21729,8 +21874,21 @@ try {
     { label: 'Who’s the green jacket guy?', send: 'Who was the green jacket guy from the Creator Summit?' },
     { label: 'What do you know about me?', send: 'What do you know about me?' }
   ];
+  /* Reminders-only build: every opener must be something BEE can actually do. Offering
+     "what do you know about me?" when memory is switched off just teaches people the
+     app is broken. */
+  var STARTERS_REMINDERS = [
+    { label: 'Remind me to call the dentist', send: 'Remind me to call the dentist tomorrow at 10am' },
+    { label: 'Bins out Sunday night', send: 'Remind me to put the bins out Sunday at 8pm' },
+    { label: 'Vitamins every weekday', send: 'Remind me to take my vitamins every weekday at 8am' },
+    { label: 'What\'s on my list?', send: 'What are my reminders?' }
+  ];
+
   function starters() {
     try {
+      if (PB.features && typeof PB.features.remindersOnly === 'function' && PB.features.remindersOnly()) {
+        return STARTERS_REMINDERS.slice();
+      }
       if (PB.profile && typeof PB.profile.isFresh === 'function' && !PB.profile.isFresh()) {
         return STARTERS_DEMO.slice();
       }
@@ -24211,12 +24369,23 @@ try {
   var PB = (window.PB = window.PB || {});
 
   var HOME = 'chat';
+  // Each entry names the feature flag that switches it on, so shipping the next feature
+  // is a flag flip rather than a code change.
   var SUB = {
-    reminders: { title: 'Reminders', icon: '✓', line: 'Everything you asked me to remember for you.' },
-    moments:   { title: 'Moments',   icon: '📷', line: 'Photos, with your own words as the record.' },
-    bee:       { title: 'Memory',    icon: '🧠', line: 'What you told me, and what I worked out myself.' },
-    trust:     { title: 'Privacy',   icon: '🔒', line: 'What is stored, what leaves, and the erase button.' }
+    reminders: { title: 'Reminders', icon: '✓', line: 'Everything you asked me to remember for you.', flag: 'reminders' },
+    moments:   { title: 'Moments',   icon: '📷', line: 'Photos, with your own words as the record.', flag: 'moments' },
+    bee:       { title: 'Memory',    icon: '🧠', line: 'What you told me, and what I worked out myself.', flag: 'memory' },
+    trust:     { title: 'Privacy',   icon: '🔒', line: 'What is stored, what leaves, and the erase button.', flag: 'privacy' }
   };
+
+  function enabled(id) {
+    var meta = SUB[id];
+    if (!meta) return true;
+    if (!PB.features || typeof PB.features.on !== 'function') return true;
+    return PB.features.on(meta.flag);
+  }
+  function liveSubs() { return Object.keys(SUB).filter(enabled); }
+
   var SCREENS = [HOME, 'more'].concat(Object.keys(SUB));
 
   var current = null;
@@ -24266,6 +24435,10 @@ try {
         else fallback('The conversation could not load.');
       } else if (id === 'more') {
         renderHub(screenEl);
+      } else if (!enabled(id)) {
+        // A switched-off feature must not be reachable by a stale saved screen or a chip.
+        go(HOME);
+        return;
       } else {
         renderSub(id);
       }
@@ -24337,7 +24510,7 @@ try {
            : 'All of this is on this phone. Nothing syncs.');
     body.appendChild(intro);
 
-    Object.keys(SUB).forEach(function (id) {
+    liveSubs().forEach(function (id) {
       var meta = SUB[id];
       var row = PB.ui.el('button', 'hub-row');
       var ico = PB.ui.el('span', 'hub-ico', meta.icon);
@@ -24366,7 +24539,11 @@ try {
     // Open-ended questions ("what should I focus on?") are where the on-device rules
     // engine runs out. This is the switch that sends only those to Claude; reminders,
     // memory and anything privacy-critical stay local either way.
-    var brainRow = PB.ui.el('button', 'hub-row hub-row-quiet');
+    // Open-ended conversation is gated in a reminders-only build, so a key would buy
+    // nothing — don't offer it.
+    var brainRow = (PB.features && PB.features.remindersOnly && PB.features.remindersOnly())
+      ? null : PB.ui.el('button', 'hub-row hub-row-quiet');
+    if (brainRow) {
     brainRow.appendChild(PB.ui.el('span', 'hub-ico', '💬'));
     var bmid = PB.ui.el('span', 'hub-mid');
     bmid.appendChild(PB.ui.el('span', 'hub-title', 'How BEE thinks'));
@@ -24378,6 +24555,7 @@ try {
     brainRow.appendChild(bmid);
     brainRow.addEventListener('click', openBrainSheet);
     body.appendChild(brainRow);
+    }
 
     // Which build is this phone actually running? Without this, "is it fixed yet?" is
     // unanswerable — a home-screen app can sit on a cached copy without saying so.
