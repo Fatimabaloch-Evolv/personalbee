@@ -351,6 +351,11 @@ img { max-width: 100%; display: block; }
   animation: sheet-up .32s var(--ease);
 }
 @keyframes sheet-up { from { transform: translateY(100%); } }
+/* A sheet with no controls of its own takes focus itself so the reader lands inside it
+   and Escape is in reach. It is a landing spot, not a control, so it should not draw a
+   ring around the whole panel — every actual control inside it still gets one. */
+.sheet:focus, .sheet:focus-visible { outline: none !important; }
+
 .sheet-grip { width: 38px; height: 4px; border-radius: 2px; background: var(--line-strong); margin: 6px auto 14px; }
 
 /* Every sheet gets a real way out. Escape closes it too, but a sheet whose only
@@ -2217,7 +2222,7 @@ img { max-width: 100%; display: block; }
   color: var(--text-dim, #6b6483);
 }
 
-.rm-nudge-chev { flex: 0 0 auto; color: var(--text-faint, #9a94ae); }
+.rm-nudge-chev { flex: 0 0 auto; color: var(--text-faint, #6f6889); }
 
 /* --------------------------------------------- delivery line + its sheet */
 /* The honesty stays in the product; it just stops shouting. */
@@ -2253,7 +2258,7 @@ img { max-width: 100%; display: block; }
   flex: 0 0 auto;
   font-size: 12.5px;
   font-weight: 700;
-  color: var(--text-faint, #9a94ae);
+  color: var(--text-faint, #6f6889);
 }
 
 .rm-deliv-line.is-off .rm-deliv-word { color: var(--danger, var(--text-dim, #6b6483)); }
@@ -5229,7 +5234,7 @@ img { max-width: 100%; display: block; }
   border-radius: var(--radius); padding: 14px 16px;
   font-size: 17px; color: var(--text); margin-bottom: 18px;
 }
-.pbo-input:focus { border-color: var(--honey); outline: none; }
+.pbo-input:focus { border-color: var(--honey); }
 .pbo-input::placeholder { color: var(--text-faint); }
 
 .pbo-privacy {
@@ -5285,7 +5290,7 @@ img { max-width: 100%; display: block; }
   background: var(--bg-sunken); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 12px 15px; font-size: 16px; color: var(--text);
 }
-.pbs-input:focus { border-color: var(--honey); outline: none; }
+.pbs-input:focus { border-color: var(--honey); }
 .pbs-mode {
   font-size: 14px; line-height: 1.5; color: var(--text-dim);
   background: var(--bg-sunken); border-radius: var(--radius); padding: 13px 15px;
@@ -5310,7 +5315,7 @@ img { max-width: 100%; display: block; }
 </div>
 
 <script>
-window.PB_BUILD = "2026-08-17 05:22 UTC";
+window.PB_BUILD = "2026-08-17 05:35 UTC";
 
 /* ===== js/core.js ===== */
 try {
@@ -5595,7 +5600,8 @@ try {
         var all = [];
         try { all = Array.prototype.slice.call(sheet.querySelectorAll(sel)); } catch (e) { return []; }
         return all.filter(function (n) {
-          return !n.hasAttribute('aria-hidden') && (n.offsetWidth || n.offsetHeight || n.getClientRects().length);
+          if (n.getAttribute('aria-hidden') === 'true') return false;
+          return !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length);
         });
       }
 
