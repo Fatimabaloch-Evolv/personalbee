@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+<!-- No maximum-scale / user-scalable: blocking pinch-zoom fails WCAG 1.4.4 (Resize Text). -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#F5B301">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -34,9 +35,18 @@
   --bg-sunken: var(--cream-2);
   --text: #14122b;
   --text-dim: #6b6483;
-  --text-faint: #9a94ae;
+  /* Was #9a94ae — 2.81:1 on cream, which fails SC 1.4.3 for the 19 places this token
+     lands, timestamps and input placeholders included. This is 5.0:1 on --bg,
+     5.2:1 on --bg-raised and 4.6:1 on --bg-sunken. */
+  --text-faint: #6f6889;
   --line: rgba(20, 18, 43, .10);
   --line-strong: rgba(20, 18, 43, .18);
+
+  /* Focus ring. Deliberately not --honey: honey on cream is 1.8:1, which fails
+     SC 1.4.11 for a non-text indicator. This is 5.4:1 on --bg, and the dark theme
+     flips it to honey (10.2:1 on --bg). Paired with outline-offset so the ring always
+     lands on the page background, never on the honey face of a primary button. */
+  --focus: #8a5a00;
 
   --ok: #1ea94a;
   --warn: #e08600;
@@ -77,7 +87,10 @@
     --bg-sunken: #0b0a18;
     --text: #f3f0ff;
     --text-dim: #a9a2c4;
-    --text-faint: #7d7699;
+    /* Was #7d7699 — 4.45:1 on --bg and 4.04:1 on --bg-raised, both short of 4.5:1.
+       This is 6.5:1 on --bg and 5.9:1 on --bg-raised. */
+    --text-faint: #9a93b5;
+    --focus: var(--honey);
     --line: rgba(255, 255, 255, .10);
     --line-strong: rgba(255, 255, 255, .18);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
@@ -92,7 +105,8 @@
   --bg-sunken: #0b0a18;
   --text: #f3f0ff;
   --text-dim: #a9a2c4;
-  --text-faint: #7d7699;
+  --text-faint: #9a93b5;
+  --focus: var(--honey);
   --line: rgba(255, 255, 255, .10);
   --line-strong: rgba(255, 255, 255, .18);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
@@ -118,8 +132,40 @@ body {
 
 button, input, textarea, select { font: inherit; color: inherit; }
 button { background: none; border: none; cursor: pointer; }
-input, textarea { background: none; border: none; outline: none; }
+/* No blanket `outline: none` here any more — stripping the UA ring from the app's
+   most-used control is WCAG failure technique F78 (SC 2.4.7, 1.4.11, 2.4.13). */
+input, textarea { background: none; border: none; }
 img { max-width: 100%; display: block; }
+
+/* ---------- keyboard focus ---------- */
+/* One ring for the whole app, on a token that flips with the theme so it always
+   clears 3:1 against the surface behind it. `!important` is deliberate: several module
+   stylesheets set `outline: none` on inputs at a specificity a plain rule can't beat,
+   and a focus indicator is a floor, not a suggestion. A module that wants the ring
+   somewhere prettier (see .pb-field in beeui.css) opts out with an equally strong rule. */
+:focus-visible {
+  outline: 2px solid var(--focus) !important;
+  outline-offset: 2px !important;
+}
+/* Old Safari has :focus-visible but some embedded webviews don't; give them something. */
+@supports not selector(:focus-visible) {
+  :focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+}
+
+/* ---------- screen-reader-only ---------- */
+/* Present to assistive tech, invisible on screen. Not `display: none` and not
+   `visibility: hidden` — both remove it from the accessibility tree, and a live
+   region that isn't in the tree never announces. */
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* ---------- app frame ---------- */
 
@@ -306,7 +352,23 @@ img { max-width: 100%; display: block; }
 }
 @keyframes sheet-up { from { transform: translateY(100%); } }
 .sheet-grip { width: 38px; height: 4px; border-radius: 2px; background: var(--line-strong); margin: 6px auto 14px; }
-.sheet-title { font-size: 18px; font-weight: 700; margin-bottom: 12px; }
+
+/* Every sheet gets a real way out. Escape closes it too, but a sheet whose only
+   dismissal is "tap the dark bit" is unusable by keyboard and invisible to anyone
+   who doesn't already know the gesture. */
+.sheet-head {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-bottom: 10px; min-height: 44px;
+}
+.sheet-title { font-size: 18px; font-weight: 700; flex: 1; min-width: 0; align-self: center; }
+.sheet-close {
+  flex: none; width: 44px; height: 44px; margin: 0 -8px 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--bg-sunken); color: var(--text-dim);
+  font-size: 17px; line-height: 1;
+}
+.sheet-close:active { transform: scale(.92); }
 
 /* ---------- misc ---------- */
 
@@ -987,13 +1049,22 @@ img { max-width: 100%; display: block; }
   padding: 10px 16px;
   transition: border-color .2s ease;
 }
-.pb-field:focus-within { border-color: var(--bee-edge); }
+/* The ring belongs on the pill, not on the bare textarea inside it — an outline around
+   the textarea would draw a rectangle floating in the middle of a rounded field. This is
+   the documented opt-out from the global :focus-visible rule in base.css, so it has to
+   match its !important; base.css deliberately makes the ring hard to remove by accident. */
+.pb-field:focus-within {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.pb-input:focus,
+.pb-input:focus-visible { outline: none !important; }
 
 .pb-input {
   width: 100%;
   border: 0;
   background: none;
-  outline: none;
   resize: none;
   color: var(--text);
   font-family: inherit;
@@ -5234,12 +5305,12 @@ img { max-width: 100%; display: block; }
 <body>
 
 <div id="app">
-  <div id="screen"></div>
-  <div id="toasts"></div>
+  <main id="screen"></main>
+  <div id="toasts" role="status" aria-live="polite"></div>
 </div>
 
 <script>
-window.PB_BUILD = "2026-08-14 12:08 UTC";
+window.PB_BUILD = "2026-08-17 05:22 UTC";
 
 /* ===== js/core.js ===== */
 try {
@@ -5435,6 +5506,10 @@ try {
 
   /* --------------------------------------------------------------------- ui */
 
+  /* Sheets can stack (a confirm opened from a sheet). Only the topmost one may
+     answer to Escape or trap Tab, or the wrong dialog closes. */
+  var sheetStack = [];
+
   PB.ui = {
     el: function (tag, className, text) {
       var e = document.createElement(tag || 'div');
@@ -5468,30 +5543,122 @@ try {
       }, ms || 2600);
     },
 
+    /* A sheet is a modal dialog, so it has to behave like one: named, marked modal,
+       closable by Escape, focus trapped inside it while it is up, and focus handed
+       back to whatever opened it. The pattern is lifted from trust.js's permission
+       sheet, which already got this right, plus the focus trap and focus return it
+       lacked. Every screen that calls PB.ui.sheet inherits all of it. */
     sheet: function (title, node) {
       var app = document.getElementById('app') || document.body;
       var scrim = PB.ui.el('div', 'sheet-scrim');
+      scrim.setAttribute('aria-hidden', 'true');   // decorative; the dialog carries the semantics
+
       var sheet = PB.ui.el('div', 'sheet');
-      sheet.appendChild(PB.ui.el('div', 'sheet-grip'));
-      if (title) sheet.appendChild(PB.ui.el('div', 'sheet-title', title));
+      sheet.setAttribute('role', 'dialog');
+      sheet.setAttribute('aria-modal', 'true');
+      sheet.setAttribute('tabindex', '-1');        // focusable as a last resort
+
+      var grip = PB.ui.el('div', 'sheet-grip');
+      grip.setAttribute('aria-hidden', 'true');
+      sheet.appendChild(grip);
+
+      var head = PB.ui.el('div', 'sheet-head');
+      if (title) {
+        var h = PB.ui.el('h2', 'sheet-title', title);
+        h.id = 'sheet-title-' + PB.util.uid();
+        head.appendChild(h);
+        sheet.setAttribute('aria-labelledby', h.id);
+      } else {
+        sheet.setAttribute('aria-label', 'Dialog');
+      }
+      var closeBtn = PB.ui.el('button', 'sheet-close', '✕');
+      closeBtn.type = 'button';
+      closeBtn.setAttribute('aria-label', 'Close');
+      head.appendChild(closeBtn);
+      sheet.appendChild(head);
+
       if (node) {
         if (typeof node === 'string') {
           var w = PB.ui.el('div'); w.innerHTML = node; sheet.appendChild(w);
         } else sheet.appendChild(node);
       }
+
+      var opener = null;
+      try { opener = document.activeElement; } catch (e) {}
+
       var closed = false;
+      var closeFns = [];
+
+      function focusables() {
+        var sel = 'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),' +
+                  'select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+        var all = [];
+        try { all = Array.prototype.slice.call(sheet.querySelectorAll(sel)); } catch (e) { return []; }
+        return all.filter(function (n) {
+          return !n.hasAttribute('aria-hidden') && (n.offsetWidth || n.offsetHeight || n.getClientRects().length);
+        });
+      }
+
+      function onKey(ev) {
+        if (sheetStack[sheetStack.length - 1] !== sheet) return;   // only the topmost sheet reacts
+        if (ev.key === 'Escape' || ev.key === 'Esc') {
+          ev.preventDefault(); ev.stopPropagation();
+          close();
+          return;
+        }
+        if (ev.key !== 'Tab') return;
+        var list = focusables();
+        if (!list.length) { ev.preventDefault(); try { sheet.focus(); } catch (e) {} return; }
+        var first = list[0], last = list[list.length - 1];
+        var active = document.activeElement;
+        if (!sheet.contains(active)) { ev.preventDefault(); try { first.focus(); } catch (e) {} return; }
+        if (ev.shiftKey && active === first) { ev.preventDefault(); try { last.focus(); } catch (e) {} }
+        else if (!ev.shiftKey && active === last) { ev.preventDefault(); try { first.focus(); } catch (e) {} }
+      }
+
       function close() {
         if (closed) return; closed = true;
+        try { document.removeEventListener('keydown', onKey, true); } catch (e) {}
+        var i = sheetStack.indexOf(sheet);
+        if (i > -1) sheetStack.splice(i, 1);
         sheet.style.transition = 'transform .26s ease'; sheet.style.transform = 'translateY(100%)';
         scrim.style.transition = 'opacity .26s ease'; scrim.style.opacity = '0';
         setTimeout(function () {
           if (scrim.parentNode) scrim.parentNode.removeChild(scrim);
           if (sheet.parentNode) sheet.parentNode.removeChild(sheet);
         }, 280);
+        // hand focus back to whatever opened this, or the keyboard user is stranded at <body>
+        try {
+          if (opener && opener.focus && document.contains(opener)) opener.focus();
+        } catch (e) {}
+        for (var k = 0; k < closeFns.length; k++) {
+          try { closeFns[k](); } catch (e) { console.warn('[sheet] onClose', e); }
+        }
       }
+
       scrim.addEventListener('click', close);
+      closeBtn.addEventListener('click', function (e) { e.preventDefault(); close(); });
+      document.addEventListener('keydown', onKey, true);
+
       app.appendChild(scrim); app.appendChild(sheet);
-      return { close: close, el: sheet };
+      sheetStack.push(sheet);
+
+      // Focus the first real control; a sheet with none (the bee explainer) gets the
+      // dialog itself, so the screen reader lands inside and Escape is in reach.
+      try {
+        var list = focusables();
+        // Skip past the close button when there's something more useful to land on.
+        // When close is the only control (the bee explainer), focus the dialog itself
+        // so the reader starts at the title and reads the contents.
+        var target = list.length > 1 ? list[1] : sheet;
+        target.focus();
+      } catch (e) { try { sheet.focus(); } catch (e2) {} }
+
+      return {
+        close: close,
+        el: sheet,
+        onClose: function (fn) { if (typeof fn === 'function') closeFns.push(fn); }
+      };
     },
 
     confirm: function (title, body, okLabel, danger) {
@@ -5510,13 +5677,12 @@ try {
         wrap.appendChild(row);
         var s = PB.ui.sheet(title, wrap);
         var done = false;
-        cancel.addEventListener('click', function () { done = true; s.close(); resolve(false); });
-        ok.addEventListener('click', function () { done = true; s.close(); resolve(true); });
-        // scrim dismiss resolves false
-        setTimeout(function () {
-          var scrim = document.querySelector('.sheet-scrim');
-          if (scrim) scrim.addEventListener('click', function () { if (!done) resolve(false); });
-        }, 0);
+        function settle(v) { if (done) return; done = true; resolve(v); }
+        cancel.addEventListener('click', function () { s.close(); settle(false); });
+        ok.addEventListener('click', function () { s.close(); settle(true); });
+        // Any other way out — scrim, ✕, Escape — is a decline. This used to hang off a
+        // querySelector for the scrim, so Escape and ✕ would have left the promise pending.
+        s.onClose(function () { settle(false); });
       });
     },
 
@@ -5526,6 +5692,8 @@ try {
         var input = PB.ui.el('input');
         input.type = 'text';
         input.placeholder = placeholder || '';
+        // a placeholder is not an accessible name — it disappears the moment you type
+        input.setAttribute('aria-label', title || placeholder || 'Value');
         input.value = initial || '';
         input.style.cssText = 'width:100%;background:var(--bg-sunken);border:1px solid var(--line);' +
           'border-radius:var(--radius);padding:13px 15px;font-size:15px;margin-bottom:14px;';
@@ -5536,12 +5704,16 @@ try {
         row.appendChild(cancel); row.appendChild(ok);
         wrap.appendChild(row);
         var s = PB.ui.sheet(title, wrap);
-        setTimeout(function () { input.focus(); }, 260);
-        cancel.addEventListener('click', function () { s.close(); resolve(null); });
-        ok.addEventListener('click', function () { s.close(); resolve(input.value.trim() || null); });
+        var done = false;
+        function settle(v) { if (done) return; done = true; resolve(v); }
+        setTimeout(function () { try { input.focus(); } catch (e) {} }, 260);
+        cancel.addEventListener('click', function () { s.close(); settle(null); });
+        ok.addEventListener('click', function () { s.close(); settle(input.value.trim() || null); });
         input.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') { s.close(); resolve(input.value.trim() || null); }
+          if (e.key === 'Enter') { e.preventDefault(); s.close(); settle(input.value.trim() || null); }
         });
+        // dismissed without answering — resolve rather than leave the caller waiting forever
+        s.onClose(function () { settle(null); });
       });
     },
 
@@ -5630,6 +5802,214 @@ try {
 })();
 
 } catch (e) { console.error('[PB] module failed: js/features.js', e); }
+
+/* ===== js/handoff.js ===== */
+try {
+/* Personalbee — surviving the install.
+ *
+ * iOS gives a Home Screen web app its own storage partition. Safari copies cookies on
+ * install and nothing else, so everything under localStorage stays behind in the browser
+ * tab. Someone who tries BEE at the URL, writes down three reminders, then installs it —
+ * the flow we actively recommend — opens the app to find it empty, with no explanation.
+ *
+ * There is no API to move the data across. So this module does the two things that are
+ * possible: it says so before the install rather than after, and it hands over a copy the
+ * person can paste into the installed app.
+ *
+ * It also asks for persistent storage, which is the difference between data the system
+ * may evict under disk pressure and data it may not.
+ */
+(function () {
+  'use strict';
+  var PB = (window.PB = window.PB || {});
+
+  var DISMISS_KEY = 'handoff.dismissed';
+
+  function installed() {
+    try {
+      if (window.navigator.standalone === true) return true;                 // iOS
+      if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
+      if (window.matchMedia && window.matchMedia('(display-mode: fullscreen)').matches) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function isIOS() {
+    try {
+      var ua = navigator.userAgent || '';
+      return /iPad|iPhone|iPod/.test(ua) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    } catch (e) { return false; }
+  }
+
+  /* ---------------------------------------------------------------- durability */
+
+  // Persistent storage is exempt from eviction under disk pressure. WebKit grants it on
+  // heuristics rather than a prompt — being an installed web app is one of them — so this
+  // is worth asking for every launch and never worth blocking on.
+  function requestPersistence() {
+    try {
+      if (!navigator.storage || typeof navigator.storage.persist !== 'function') return;
+      navigator.storage.persisted().then(function (already) {
+        if (already) return;
+        navigator.storage.persist().then(function (granted) {
+          if (PB.store) PB.store.set('storage.persistent', !!granted);
+        })['catch'](function () {});
+      })['catch'](function () {});
+    } catch (e) {}
+  }
+
+  /* -------------------------------------------------------------------- export */
+
+  function snapshot() {
+    var out = { app: 'personalbee', v: 1, at: new Date().toISOString(), data: {} };
+    try {
+      (PB.store.keys() || []).forEach(function (k) {
+        // The key is a credential, not data. It must never travel in a blob someone
+        // might paste into a message to themselves.
+        if (k === 'brain.key') return;
+        out.data[k] = PB.store.get(k, null);
+      });
+    } catch (e) {}
+    return out;
+  }
+
+  function countable(snap) {
+    var n = 0;
+    try {
+      var r = snap.data.reminders;
+      if (r && r.length) n = r.length;
+    } catch (e) {}
+    return n;
+  }
+
+  function applySnapshot(text) {
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return { ok: false, why: 'That doesn\'t look like a BEE backup.' }; }
+    if (!parsed || parsed.app !== 'personalbee' || !parsed.data) {
+      return { ok: false, why: 'That doesn\'t look like a BEE backup.' };
+    }
+    var wrote = 0, failed = 0;
+    Object.keys(parsed.data).forEach(function (k) {
+      if (k === 'brain.key') return;
+      if (PB.store.set(k, parsed.data[k])) wrote++; else failed++;
+    });
+    return { ok: failed === 0, wrote: wrote, failed: failed, count: countable(parsed) };
+  }
+
+  /* ---------------------------------------------------------------------- ui */
+
+  function textField(value) {
+    var t = document.createElement('textarea');
+    t.value = value;
+    t.readOnly = false;
+    t.setAttribute('rows', '5');
+    t.style.cssText = 'width:100%;background:var(--bg-sunken);border:1px solid var(--line);' +
+      'border-radius:var(--radius);padding:12px 14px;font-size:12px;line-height:1.4;' +
+      'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);resize:vertical;';
+    return t;
+  }
+
+  function openTransfer(mode) {
+    var wrap = PB.ui.el('div');
+    var snap = snapshot();
+    var n = countable(snap);
+
+    if (mode === 'out') {
+      wrap.appendChild(PB.ui.el('p', 'dim small',
+        n ? 'Copy this, install BEE from the Share menu, then paste it back in on the first screen. ' +
+            'It carries ' + n + ' reminder' + (n === 1 ? '' : 's') + ' and your settings.'
+          : 'There\'s nothing saved yet, so there\'s nothing to carry across.'));
+      var field = textField(JSON.stringify(snap));
+      field.style.marginTop = '14px';
+      wrap.appendChild(field);
+
+      var copy = PB.ui.el('button', 'btn btn-primary btn-block', 'Copy');
+      copy.style.marginTop = '12px';
+      copy.addEventListener('click', function () {
+        field.select();
+        var done = false;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(field.value); done = true;
+          }
+        } catch (e) {}
+        if (!done) { try { done = document.execCommand('copy'); } catch (e) {} }
+        PB.ui.toast(done ? 'Copied. Keep it somewhere until you\'ve pasted it in.'
+                         : 'Select the text and copy it manually.');
+      });
+      wrap.appendChild(copy);
+      PB.ui.sheet('Take your reminders with you', wrap);
+      return;
+    }
+
+    wrap.appendChild(PB.ui.el('p', 'dim small',
+      'Paste the text you copied from the browser tab. Anything already here will be replaced.'));
+    var input = textField('');
+    input.placeholder = '{"app":"personalbee"…';
+    input.style.marginTop = '14px';
+    wrap.appendChild(input);
+
+    var go = PB.ui.el('button', 'btn btn-primary btn-block', 'Restore');
+    go.style.marginTop = '12px';
+    go.addEventListener('click', function () {
+      var res = applySnapshot(String(input.value || '').trim());
+      if (!res.ok && res.why) { PB.ui.toast(res.why); return; }
+      if (!res.ok) { PB.ui.toast('Some of it wouldn\'t save — storage may be full.'); return; }
+      PB.ui.toast('Restored ' + (res.count || 0) + ' reminder' + (res.count === 1 ? '' : 's') + '.');
+      setTimeout(function () { location.reload(); }, 700);
+    });
+    wrap.appendChild(go);
+    PB.ui.sheet('Bring your reminders across', wrap);
+  }
+
+  /* ------------------------------------------------------------------ banner */
+
+  function banner() {
+    if (installed()) return null;
+    if (!isIOS()) return null;                       // only iOS partitions this way
+    try { if (PB.store.get(DISMISS_KEY, false)) return null; } catch (e) {}
+
+    var n = 0;
+    try { n = (PB.store.get('reminders', []) || []).length; } catch (e) {}
+
+    var b = PB.ui.el('div', 'handoff');
+    var head = PB.ui.el('div', 'handoff-title', 'Reading this in Safari?');
+    b.appendChild(head);
+    b.appendChild(PB.ui.el('p', 'handoff-line',
+      n ? 'Adding BEE to your Home Screen starts a fresh, separate copy — iPhone keeps the two apart, ' +
+          'so the ' + n + ' reminder' + (n === 1 ? '' : 's') + ' you\'ve made here won\'t come with you. Copy them across first.'
+        : 'Adding BEE to your Home Screen starts a separate copy. Anything you save here stays here — ' +
+          'so it\'s worth installing first, then using it.'));
+
+    var row = PB.ui.el('div', 'handoff-row');
+    if (n) {
+      var take = PB.ui.el('button', 'btn btn-primary', 'Copy them across');
+      take.addEventListener('click', function () { openTransfer('out'); });
+      row.appendChild(take);
+    }
+    var ok = PB.ui.el('button', 'btn btn-ghost', n ? 'Not now' : 'Got it');
+    ok.addEventListener('click', function () {
+      try { PB.store.set(DISMISS_KEY, true); } catch (e) {}
+      if (b.parentNode) b.parentNode.removeChild(b);
+    });
+    row.appendChild(ok);
+    b.appendChild(row);
+    return b;
+  }
+
+  PB.handoff = {
+    installed: installed,
+    banner: banner,
+    exportSheet: function () { openTransfer('out'); },
+    importSheet: function () { openTransfer('in'); },
+    snapshot: snapshot
+  };
+
+  requestPersistence();
+})();
+
+} catch (e) { console.error('[PB] module failed: js/handoff.js', e); }
 
 /* ===== data/kb.js ===== */
 try {
@@ -12354,6 +12734,9 @@ try {
   var KEY_LASTTICK = 'reminders.lastTick';
 
   var items = [];
+  // What the last load() made of what was on disk. Rows we can't read are a data loss
+  // event, not a no-op, so they are counted here and surfaced rather than swallowed.
+  var loadReport = { total: 0, dropped: 0, reasons: [], at: null };
   var lastTickAt = null;        // Date — last time tick() ran (any source)
   var lastExternalTickAt = null;// Date — last time app.js drove us
   var selfTimer = null;
@@ -12368,9 +12751,23 @@ try {
     } catch (e) { raw = []; }
     if (!raw || Object.prototype.toString.call(raw) !== '[object Array]') raw = [];
     items = [];
+    loadReport = { total: raw.length, dropped: 0, reasons: [], at: now().toISOString() };
     for (var i = 0; i < raw.length; i++) {
       var r = normalize(raw[i]);
-      if (!r) continue;
+      if (!r) {
+        // Skipping a damaged row in silence means a reminder she set simply stops
+        // existing, and nothing anywhere ever says so. Count it, log it, and let the
+        // screen and the delivery panel tell her.
+        loadReport.dropped++;
+        var why = rejectReason(raw[i]);
+        if (loadReport.reasons.indexOf(why) === -1) loadReport.reasons.push(why);
+        try {
+          if (window.console && console.warn) {
+            console.warn('[reminders] dropped an unreadable stored reminder (' + why + ') at index ' + i, raw[i]);
+          }
+        } catch (e2) {}
+        continue;
+      }
       // It came out of storage, so it is stored — whatever a past session thought.
       var u = r.tags.indexOf(UNSAVED_TAG);
       if (u !== -1) r.tags.splice(u, 1);
@@ -12423,7 +12820,15 @@ try {
 
   function iso(v) {
     if (!v) return null;
-    if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString();
+    // `instanceof Date` is FALSE for a Date built in another realm — an iframe, a worker
+    // message, a vm context, a JSON reviver from a different window. Duck-type alongside
+    // it, or a perfectly good due date silently becomes null and the reminder never fires.
+    if (v instanceof Date || (typeof v === 'object' && typeof v.getTime === 'function')) {
+      var t;
+      try { t = v.getTime(); } catch (e) { return null; }
+      if (typeof t !== 'number' || isNaN(t)) return null;
+      return new Date(t).toISOString();
+    }
     if (typeof v === 'number') { var d0 = new Date(v); return isNaN(d0.getTime()) ? null : d0.toISOString(); }
     if (typeof v === 'string') {
       var d = new Date(v);
@@ -12432,10 +12837,27 @@ try {
     return null;
   }
 
+  // Was a value supplied at all? `null`, `undefined` and '' mean "no due date", which is
+  // legitimate. Anything else was meant to be a date.
+  function present(v) { return !(v === null || v === undefined || v === ''); }
+
+  // Why a stored row was unreadable — so load() can say something truer than a count.
+  function rejectReason(o) {
+    if (!o || typeof o !== 'object') return 'not an object';
+    if (!(o.text == null ? '' : String(o.text)).trim()) return 'no text';
+    if (present(o.due) && !iso(o.due)) return 'unreadable due date';
+    return 'unreadable';
+  }
+
   function normalize(o) {
     if (!o || typeof o !== 'object') return null;
     var text = (o.text == null ? '' : String(o.text)).trim();
     if (!text) return null;
+    // A due date that was written down but can't be read back is NOT the same thing as a
+    // reminder with no time. Nulling it produced a reminder that looked saved, sat on the
+    // list, and could never fire — the silent failure this module exists to prevent.
+    // Refuse the row instead, so load() can count it and say so out loud.
+    if (present(o.due) && !iso(o.due)) return null;
     var tags = Object.prototype.toString.call(o.tags) === '[object Array]' ? o.tags.slice() : [];
     return {
       id: o.id || uid(),
@@ -12677,6 +13099,35 @@ try {
     return rec;
   }
 
+  // The wall-clock time this series is anchored to. The rule's own `time` wins; a rule
+  // without one falls back to the time of day of the current occurrence.
+  function anchorTimeParts(rec, base) {
+    var t = recTimeParts(rec);
+    if (t) return t;
+    return { h: base.getHours(), m: base.getMinutes() };
+  }
+
+  // Force a candidate date onto the rule's wall-clock time.
+  //
+  // Rolling a date forward with addDays() is a UTC-safe way to move a day, but it carries
+  // the PREVIOUS occurrence's clock time with it — and across a DST transition that clock
+  // time is wrong. A 02:30 daily rule stepped onto 8 Mar in Los Angeles lands on a time
+  // that doesn't exist and JS normalises it to 03:30. Correct for that one day. But the
+  // next step rolls forward from 03:30, and so does every step after it: the series is
+  // permanently an hour late while `recurrence.time` still reads "02:30", so the row goes
+  // on printing "every day at 2:30am" about a reminder that fires at half three. A
+  // reminder that lies about its own schedule is worse than one that never fires.
+  //
+  // So the rule's own hour and minute are re-applied after every step — the same snap
+  // alignToRecurrence() already does. On the transition day itself the snap still
+  // normalises 02:30 to 03:30, which is right and stays.
+  function snapToRuleTime(d, t) {
+    if (!t) return d;
+    var x = new Date(d.getTime());
+    x.setHours(t.h, t.m, 0, 0);
+    return x;
+  }
+
   // Next occurrence strictly after `from`, keeping the original time of day.
   function nextOccurrence(r, from) {
     var rec = r.recurrence;
@@ -12687,6 +13138,7 @@ try {
     var anchor = new Date(Math.max(from.getTime(), base.getTime()));
     var freq = String(rec.freq || '').toLowerCase();
     var next = new Date(base.getTime());
+    var wall = anchorTimeParts(rec, base);
     var guard = 0;
 
     // setMonth(+1) and setFullYear(+1) OVERFLOW. A reminder set for the 31st becomes the
@@ -12696,12 +13148,16 @@ try {
     // originally chose so a short month can't drag the whole series along with it.
     if (freq === 'monthly' || freq === 'month') {
       var mdom = anchorDom(rec, base);
-      while (next.getTime() <= anchor.getTime() && guard++ < 120) next = addMonthsClamped(next, 1, mdom);
+      while (next.getTime() <= anchor.getTime() && guard++ < 120) {
+        next = snapToRuleTime(addMonthsClamped(next, 1, mdom), wall);
+      }
       return next;
     }
     if (freq === 'yearly' || freq === 'year') {
       var ydom = anchorDom(rec, base);
-      while (next.getTime() <= anchor.getTime() && guard++ < 40) next = addYearsClamped(next, 1, ydom);
+      while (next.getTime() <= anchor.getTime() && guard++ < 40) {
+        next = snapToRuleTime(addYearsClamped(next, 1, ydom), wall);
+      }
       return next;
     }
 
@@ -12718,7 +13174,7 @@ try {
       // Count whole weeks from the original due date so the cadence never drifts.
       var startWeek = weekIndex(base);
       while (guard++ < 400) {
-        next = addDays(next, 1);
+        next = snapToRuleTime(addDays(next, 1), wall);
         if (next.getTime() <= anchor.getTime()) continue;
         if (allowed.indexOf(next.getDay()) === -1) continue;
         if ((weekIndex(next) - startWeek) % weekStep === 0) return next;
@@ -12727,7 +13183,7 @@ try {
     }
 
     while (guard++ < 400) {
-      next = addDays(next, 1);
+      next = snapToRuleTime(addDays(next, 1), wall);
       if (next.getTime() <= anchor.getTime()) continue;
       if (!allowed) return next;                       // daily / unknown -> next day
       if (allowed.indexOf(next.getDay()) !== -1) return next;
@@ -12735,11 +13191,23 @@ try {
     return null;
   }
 
-  // Whole weeks since the epoch, so two dates in the same Mon-Sun week share an index.
+  // Whole weeks from a fixed LOCAL Monday, so two dates in the same Mon-Sun week share
+  // an index — everywhere on earth.
+  //
+  // This used to be Math.round(mondayMidnight / 604800000). The epoch is a Thursday, so
+  // a local Monday midnight sits ~4/7 of a week off it: the fractional part lands right
+  // beside .5, and at UTC+12/+13 (Pacific/Auckland) an hour of DST is enough to push it
+  // across. Math.round then returns a different index for the same week, every biweekly
+  // rule flips to the opposite week, and "every other Tuesday" quietly fires on the wrong
+  // fortnight forever. Measuring in whole days from a local Monday keeps the quantity an
+  // exact multiple of 7 no matter what the offset does.
+  var WEEK_REF = null;
   function weekIndex(d) {
     var x = startOfDay(d);
     x = addDays(x, -((x.getDay() + 6) % 7));   // back to Monday
-    return Math.round(x.getTime() / 604800000);
+    if (!WEEK_REF) WEEK_REF = new Date(1970, 0, 5, 0, 0, 0, 0);  // 5 Jan 1970 — a Monday
+    var days = Math.round((x.getTime() - WEEK_REF.getTime()) / DAY);
+    return Math.round(days / 7);
   }
 
   /* ---------------------------------------------------------- the confirm */
@@ -13124,28 +13592,49 @@ try {
     setTimeout(function () { requestNotify(); }, 700);
   }
 
+  // Two separate yeses are needed before anything can reach her when the app is shut:
+  // hers, in our own sheet, and the browser's. Asking only the first and then reporting
+  // success is the promise being broken at the very last step — she says yes, we say
+  // "notifications are on", and no notification can ever fire. So the in-app grant always
+  // carries on to the real one.
+  function requestOsNotify() {
+    try {
+      if (typeof window.Notification === 'undefined') { updateDelivery(); return; }
+      if (Notification.permission !== 'default') { updateDelivery(); return; }  // already settled
+      var q = Notification.requestPermission(function () { updateDelivery(); });
+      if (q && typeof q.then === 'function') {
+        q.then(function () { updateDelivery(); }, function () { updateDelivery(); });
+      }
+    } catch (e) {}
+    updateDelivery();
+  }
+
   function requestNotify() {
     var ts = trustState();
-    if (ts === 'granted' || ts === 'denied') { updateDelivery(); return; }
+    // She already told us no. We don't go around her to the OS.
+    if (ts === 'denied') { updateDelivery(); return; }
+    // She already said yes to us — but the browser may never have been asked. That gap is
+    // exactly what left the panel claiming "notifications are on" over a channel that
+    // could not deliver. Close it.
+    if (ts === 'granted') { requestOsNotify(); return; }
     try {
       if (PB.trust && PB.trust.request) {
         var p = PB.trust.request('notifications', WHY_NOTIFY);
         if (p && typeof p.then === 'function') {
-          p.then(function () { updateDelivery(); }, function () { updateDelivery(); });
+          p.then(function (ok) {
+            if (ok === false || trustState() === 'denied') { updateDelivery(); return; }
+            requestOsNotify();
+          }, function () { updateDelivery(); });
+        } else if (trustState() === 'granted') {
+          requestOsNotify();                 // synchronous trust module, answer already in
         } else {
           updateDelivery();
         }
         return;
       }
     } catch (e) {}
-    // No trust module — degrade to the browser's own prompt, still just-in-time.
-    try {
-      if (typeof window.Notification !== 'undefined' && Notification.permission === 'default') {
-        var q = Notification.requestPermission();
-        if (q && typeof q.then === 'function') q.then(function () { updateDelivery(); });
-      }
-    } catch (e) {}
-    updateDelivery();
+    // No trust module — go straight to the browser's own prompt, still just-in-time.
+    requestOsNotify();
   }
 
   function canUseOsNotification() {
@@ -13178,19 +13667,35 @@ try {
     var os = osState();
     var level, headline, detail, action = null;
 
+    // Both yeses are real and separate, so all four combinations get said out loud. The
+    // only state that may be called "on" is the one where a notification would actually
+    // be delivered — the same test canUseOsNotification() applies.
     if (os === 'unsupported') {
       level = 'partial';
       headline = 'In-app reminders only';
       detail = 'This device can’t show system notifications, so I’ll only be able to nudge you while Personalbee is open.';
-    } else if (ts === 'denied' || os === 'denied') {
+    } else if (os === 'denied' && ts === 'granted') {
+      // She said yes to us and the browser overruled it. Say that plainly, and say what
+      // it costs, rather than leaving her thinking it's handled.
+      level = 'off';
+      headline = 'Your browser is blocking notifications';
+      detail = 'You said yes to me, but the browser or phone is blocking notifications for this site — so nothing can reach you while Personalbee is closed. ' +
+        'I’ll nudge you the moment you open it again, and on screen while it’s open. Allow notifications for this site in your browser or phone settings and I’ll be able to reach you properly.';
+    } else if (ts === 'denied') {
+      level = 'off';
+      headline = 'Notifications are off';
+      detail = 'You told me not to send notifications, so I’ll only nudge you while Personalbee is open on screen. Anything that came due while you were away fires when you open it. Say the word and I’ll ask again.';
+    } else if (os === 'denied') {
       level = 'off';
       headline = 'Notifications are off';
       detail = 'I can only nudge you while Personalbee is open on screen. Turn notifications on in your browser or phone settings and I’ll be able to reach you properly.';
-    } else if (ts === 'granted' && os === 'granted') {
+    } else if (os === 'granted' && (ts === 'granted' || ts === null)) {
       level = 'on';
       headline = 'Reminders can reach you';
       detail = 'Notifications are on. If the app is fully closed, I’ll deliver the moment you open it again.';
-    } else if (ts === 'granted' && os !== 'granted') {
+    } else if (ts === 'granted') {
+      // os is 'default' here: she said yes to us, the browser hasn't been asked or hasn't
+      // answered. Nothing can be delivered yet, and this must not read as "on".
       level = 'partial';
       headline = 'Half on';
       detail = 'You said yes to me, but the browser hasn’t granted notifications yet. Until it does, nudges show inside the app only.';
@@ -13198,7 +13703,9 @@ try {
     } else {
       level = 'partial';
       headline = 'In-app reminders only';
-      detail = 'I haven’t asked for notification permission yet, so reminders will show inside the app only.';
+      detail = os === 'granted'
+        ? 'Your browser would allow notifications, but I haven’t asked you yet — so until you say yes, reminders show inside the app only.'
+        : 'I haven’t asked for notification permission yet, so reminders will show inside the app only.';
       action = { label: 'Turn on notifications', fn: requestNotify };
     }
 
@@ -13209,9 +13716,14 @@ try {
       action: action,
       trust: ts,
       os: os,
+      canReach: canUseOsNotification(),
       lastTick: lastTickAt,
       externallyDriven: !!lastExternalTickAt,
-      waiting: upcoming(999).length
+      waiting: upcoming(999).length,
+      // Rows that were on disk and couldn't be read back. Not a cosmetic number: each one
+      // is a reminder she set that no longer exists.
+      dropped: loadReport.dropped,
+      dropReasons: loadReport.reasons.slice()
     };
   }
 
@@ -14036,6 +14548,8 @@ try {
     fact('App', 'open now');
     var lastV = fact('Last check', lastCheckWord());
     var waitV = fact('Waiting', s.waiting + (s.waiting === 1 ? ' reminder' : ' reminders'));
+    // Only shown when it happened — but when it happened she gets to see it.
+    if (s.dropped) fact('Couldn’t be read', s.dropped + (s.dropped === 1 ? ' saved reminder' : ' saved reminders'));
     wrap.appendChild(facts);
 
     if (s.action) {
@@ -14056,9 +14570,11 @@ try {
 
   function permissionWord(s) {
     if (s.os === 'unsupported') return 'not available here';
-    if (s.trust === 'denied' || s.os === 'denied') return 'denied';
-    if (s.trust === 'granted' && s.os === 'granted') return 'granted';
+    if (s.trust === 'denied') return 'you said no';
+    if (s.os === 'denied') return s.trust === 'granted' ? 'granted to me, blocked by the browser' : 'denied';
+    if (s.os === 'granted' && (s.trust === 'granted' || s.trust === null)) return 'granted';
     if (s.trust === 'granted') return 'granted to me, pending in browser';
+    if (s.os === 'granted') return 'allowed by the browser, not asked of you yet';
     if (s.trust === 'unasked' || s.trust === null) return 'not asked yet';
     return String(s.trust);
   }
@@ -14113,7 +14629,13 @@ try {
           repaint();
         });
         PB.bus.on('permission:granted', function (p) {
-          if (p && p.name === 'notifications') updateDelivery();
+          if (p && p.name === 'notifications') {
+            // She can also turn this on from the Trust screen, and that yes is worth
+            // exactly as much as the one in our own sheet — carry it to the browser too,
+            // or she's given permission to a channel that still can't deliver.
+            requestNotify();
+            updateDelivery();
+          }
         });
         PB.bus.on('permission:denied', function (p) {
           if (p && p.name === 'notifications') updateDelivery();
@@ -14146,8 +14668,21 @@ try {
     } catch (e) {}
   }
 
+  // A reminder that was on disk and can't be read back is a reminder she set and no longer
+  // has. Silence there is the same failure as one that never fires, only quieter — so it
+  // gets said, once, in plain language.
+  function reportDropped() {
+    if (!loadReport.dropped) return;
+    var n = loadReport.dropped;
+    toast('I couldn’t read ' + n + ' saved reminder' + (n === 1 ? '' : 's') + ' back off this device — ' +
+      (n === 1 ? 'it’s' : 'they’re') + ' not on your list. Tell me again and I’ll set ' +
+      (n === 1 ? 'it' : 'them') + ' properly.', 8000);
+  }
+
   function boot() {
     try { load(); } catch (e) { items = []; }
+    // Wait for the shell to exist before speaking up, but never drop it.
+    if (loadReport.dropped) setTimeout(function () { try { reportDropped(); } catch (e) {} }, 900);
     pendingCatchUp = true;   // armed here, consumed by the first tick from any source
     try { wire(); } catch (e) {}
     // Backstop: if nothing has driven a tick within the first moments, do it ourselves so
@@ -14177,7 +14712,11 @@ try {
     get: function (id) { return byId(id); },
     count: function () { return list({ status: 'open' }).length; },
     deliveryStatus: deliveryStatus,
-    openComposer: openComposer
+    openComposer: openComposer,
+    // What the last read off disk actually recovered — {total, dropped, reasons, at}.
+    loadReport: function () {
+      return { total: loadReport.total, dropped: loadReport.dropped, reasons: loadReport.reasons.slice(), at: loadReport.at };
+    }
   };
 
   boot();
@@ -14263,6 +14802,20 @@ try {
   }
   function isAirplane() {
     try { return !!(PB.trust && PB.trust.isAirplane && PB.trust.isAirplane()); } catch (e) { return false; }
+  }
+
+  /**
+   * Tell the trust layer that real hardware just opened, so it lands in the
+   * access log. Returns a release() to call when it closes. See the hook doc
+   * in js/trust.js. If trust isn't loaded, this is a no-op — never a throw.
+   */
+  function deviceOpen(name, detail, stopFn) {
+    try {
+      if (PB.trust && typeof PB.trust.deviceOpen === 'function') {
+        return PB.trust.deviceOpen(name, detail, stopFn);
+      }
+    } catch (e) {}
+    return function () {};
   }
 
   /* --------------------------------------------------------------------- */
@@ -14473,6 +15026,7 @@ try {
   function pickFile(useCamera, onLate) {
     return new Promise(function (resolve) {
       var settled = false;
+      var release = null;
       var input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
@@ -14484,6 +15038,11 @@ try {
       function cleanup() {
         window.removeEventListener('focus', onFocus, true);
         if (input.parentNode) input.parentNode.removeChild(input);
+        if (release) {
+          var r = release;
+          release = null;
+          try { r('The camera app handed control back. Nothing is open on this app’s side.'); } catch (e) {}
+        }
       }
       function finish(value) {
         if (settled) {
@@ -14522,6 +15081,17 @@ try {
       window.addEventListener('focus', onFocus, true);
 
       try {
+        // This click is the moment the camera hardware is handed to the OS.
+        // There is no MediaStream here — a file input with `capture` launches
+        // the phone's own camera app — so there is nothing for this page to
+        // hold and nothing it could later stop. Log it anyway: an open the log
+        // does not mention is exactly the kind of gap this screen exists to
+        // close. Library picks open no hardware, so they are not logged as one.
+        if (useCamera) {
+          release = deviceOpen('camera',
+            'Handed to the phone’s own camera app by a file input. This page never receives a live ' +
+            'video stream — only the photo you choose to take, which is then stored on this device.');
+        }
         input.click();
       } catch (e) {
         toast('I couldn\'t open the camera on this device.');
@@ -14532,7 +15102,21 @@ try {
 
   /* --------------------------------------------------------------------- */
   /* Voice — a genuine affordance where available, plain text where not     */
+  /*                                                                       */
+  /* Be exact about what this is. SpeechRecognition is not on-device: on    */
+  /* iOS and Android the phone streams the audio to Apple or Google to be   */
+  /* transcribed. It is a native transport, so the fetch/XHR/WebSocket      */
+  /* guard in trust.js cannot see it, block it, or log it. Two consequences */
+  /* are handled here:                                                      */
+  /*   - airplane mode must refuse it, exactly as js/beeui.js does, because */
+  /*     otherwise switching the network off would still send audio;        */
+  /*   - the reason string must say where the audio goes. The old one said  */
+  /*     "Recording stays on this phone", which was simply not true.        */
   /* --------------------------------------------------------------------- */
+
+  var MIC_WHY = 'So you can talk instead of type when you tell me about a photo. ' +
+    'Your phone does the transcribing, which means it sends the audio to Apple or Google to turn into words. ' +
+    'Nothing is recorded or kept here, and airplane mode turns it off completely.';
 
   function SpeechCtor() {
     return window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -14562,16 +15146,29 @@ try {
         return;
       }
 
+      if (isAirplane()) {
+        toast('Airplane mode is on. Speech-to-text would have to leave the phone, so it\'s off — typing still works.', 5000);
+        try { textarea.focus(); } catch (e) {}
+        return;
+      }
+
       var go = Promise.resolve(true);
       if (PB.trust && PB.trust.request) {
         go = Promise.resolve(
-          PB.trust.request('mic', 'So you can talk instead of type when you tell me about a photo. Recording stays on this phone.')
+          PB.trust.request('mic', MIC_WHY)
         )['catch'](function () { return false; });
       }
 
       go.then(function (allowed) {
         if (!allowed) {
           toast('No mic — type it instead, that works just as well.');
+          try { textarea.focus(); } catch (e) {}
+          return;
+        }
+        // Re-check: the permission sheet is modal, but airplane mode can be
+        // switched from elsewhere while it is up. Better to refuse twice.
+        if (isAirplane()) {
+          toast('Airplane mode is on. Speech-to-text would have to leave the phone, so it\'s off — typing still works.', 5000);
           try { textarea.focus(); } catch (e) {}
           return;
         }
@@ -14594,6 +15191,12 @@ try {
             toast('I didn\'t catch that — you can type it instead.');
           };
           rec.onend = function () { stop(); };
+          // rec.start() is where the mic actually opens. trust.js patches the
+          // SpeechRecognition prototype, so this single call is what writes the
+          // 'mic opened' line in the access log, refuses to start when the mic
+          // is off or airplane mode is on, and registers a stopper so that
+          // turning the mic off in Trust aborts this mid-sentence. Deliberately
+          // not logged a second time from here: one open, one line.
           rec.start();
           listening = true;
           btn.classList.add('is-listening');
@@ -15962,9 +16565,19 @@ try {
     return !!(o && typeof o === 'object' && (o.id || o.text));
   }
 
-  /* Create a reminder through PB.reminders if possible; fall back to a
-   * schema-exact local record so the demo never dead-ends. */
-  function createReminder(task, due, dueText, recurrence) {
+  var UNSAVED_TAG = 'storage:failed';
+
+  /* Create a reminder through PB.reminders — the one and only write path.
+   *
+   * `flags` carries {hasTime, hasDate}: whether SHE gave us the hour and the day, or we
+   * worked them out. Without it, reminders.js has to re-parse the prose in `dueText` to
+   * decide, which is guesswork about a fact we already know — and it guesses wrong in the
+   * one place it matters most. The departure path computes a leave time to the minute and
+   * passes the prose "to be on time"; no clock in that string, so the reminder got tagged
+   * time:assumed and BEE announced "you didn't give me a time, so I picked 1:25pm" about a
+   * time it had calculated. Pass what the parser already told us and the disclosure stops
+   * depending on a second reading of English. */
+  function createReminder(task, due, dueText, recurrence, flags) {
     var payload = {
       text: task,
       due: iso(due),
@@ -15974,6 +16587,8 @@ try {
       confirmed: true,
       tags: []
     };
+    if (flags && typeof flags.hasTime === 'boolean') payload.hasTime = flags.hasTime;
+    if (flags && typeof flags.hasDate === 'boolean') payload.hasDate = flags.hasDate;
 
     if (PB.reminders && isFn(PB.reminders.create)) {
       var before = allReminders().length;
@@ -15993,16 +16608,25 @@ try {
       if (after.length > before) return after[after.length - 1];
     }
 
-    // Last resort: write it ourselves, in the contract's exact shape.
+    // There used to be a second writer here: push onto PB.store's 'reminders' array,
+    // discard the return value, emit reminder:created, and let the caller confirm. That is
+    // precisely the "confirmed but never stored" failure reminders.js was fixed for —
+    // reintroduced in a fallback nobody exercises, bypassing its write-then-read-back.
+    // One write path only. If it isn't there or it refused, we do NOT write around it and
+    // we do NOT claim it landed; we hand back a record marked unsaved so confirmReminder
+    // says so out loud, and it still holds the schema so cards and chips keep working.
     var local = makeReminder(task, due, dueText, recurrence);
-    if (PB.store && isFn(PB.store.get) && isFn(PB.store.set)) {
-      var list = tryCall(PB.store.get, PB.store, ['reminders', []], []);
-      if (!isArr(list)) list = [];
-      list.push(local);
-      tryCall(PB.store.set, PB.store, ['reminders', list], null);
-    }
-    if (PB.bus && isFn(PB.bus.emit)) tryCall(PB.bus.emit, PB.bus, ['reminder:created', local], null);
+    local.confirmed = false;
+    local.tags.push(UNSAVED_TAG);
+    if (PB.bus && isFn(PB.bus.emit)) tryCall(PB.bus.emit, PB.bus, ['reminder:savefailed', local], null);
     return local;
+  }
+
+  /* `did` is the list of side effects actually performed. "Created reminder" for a write
+   * that didn't land is the same lie as the confirmation, one line further down. */
+  function didCreate(r) {
+    if (r && isArr(r.tags) && r.tags.indexOf(UNSAVED_TAG) !== -1) return ['Tried to create reminder — not saved'];
+    return ['Created reminder'];
   }
 
   function confirmReminder(r) {
@@ -16011,6 +16635,13 @@ try {
 
     var d = toDate(r && r.due);
     var task = trim(r && r.text) || 'that';
+
+    // No reminders module to phrase it for us, and the write never landed. Nothing here
+    // may sound like a promise kept.
+    if (r && isArr(r.tags) && r.tags.indexOf(UNSAVED_TAG) !== -1) {
+      return 'I couldn\'t save ' + task + ' on this device, so it isn\'t written down and I can\'t promise to nudge you about it. ' +
+        'Freeing up some space and telling me again should fix it.';
+    }
     if (r && r.recurrence && r.recurrence.freq) {
       var rc = r.recurrence;
       var when = rc.time ? (' at ' + rc.time) : '';
@@ -16877,6 +17508,18 @@ try {
     return (parsed && parsed.entities) ? parsed.entities : {};
   }
 
+  /* Pull the parser's own verdict on what she actually said out of an entities blob or a
+   * parseDateTime result. Returns undefined when the parser didn't say, so reminders.js
+   * keeps its existing fallbacks rather than being handed a made-up `false`. */
+  function whenFlags(src) {
+    if (!src || typeof src !== 'object') return undefined;
+    var f = {};
+    var any = false;
+    if (typeof src.hasTime === 'boolean') { f.hasTime = src.hasTime; any = true; }
+    if (typeof src.hasDate === 'boolean') { f.hasDate = src.hasDate; any = true; }
+    return any ? f : undefined;
+  }
+
   function parseWhen(text) {
     if (PB.nlu && isFn(PB.nlu.parseDateTime)) {
       var r = tryCall(PB.nlu.parseDateTime, PB.nlu, [text, now()], null);
@@ -16895,6 +17538,9 @@ try {
     var due = toDate(e.datetime);
     var dueText = trim(e.datetimeText);
     var rec = e.recurrence || null;
+    // Whether she named the hour is the parser's finding, not something to re-derive from
+    // prose later. Carry it with the time it describes.
+    var flags = whenFlags(e);
 
     if (!due && !rec) {
       var guess = parseWhen(text);
@@ -16902,6 +17548,7 @@ try {
         due = toDate(guess.date);
         dueText = dueText || trim(guess.text);
         rec = rec || guess.recurrence || null;
+        flags = whenFlags(guess);
       }
     }
 
@@ -16912,6 +17559,8 @@ try {
         due = new Date(due.getTime());
         if (due.getTime() <= now().getTime()) due = new Date(due.getTime() + 86400000);
         dueText = dueText || 'same time as last one';
+        // Copied off a reminder she set herself — the hour is hers, not ours.
+        flags = { hasTime: true, hasDate: true };
       }
     }
 
@@ -16931,14 +17580,14 @@ try {
       );
     }
 
-    var r = createReminder(task, due, dueText, rec);
+    var r = createReminder(task, due, dueText, rec, flags);
     rememberReminder(r);
 
     var chips = [
       { label: 'Show my reminders', send: 'What are my reminders?' },
       { label: 'Add another', send: 'Remind me to ' }
     ];
-    return reply(confirmReminder(r), chips, remCard([r], 'New reminder'), ['Created reminder']);
+    return reply(confirmReminder(r), chips, remCard([r], 'New reminder'), didCreate(r));
   }
 
   function rememberReminder(r) {
@@ -18913,7 +19562,7 @@ try {
       // product is built around.
       if (p.kind === 'reminder.time' && trim(p.task)) {
         try {
-          var kept = createReminder(p.task, null, 'no time set', null);
+          var kept = createReminder(p.task, null, 'no time set', null, { hasTime: false, hasDate: false });
           rememberReminder(kept);
           state.carriedOver = trim(p.task);
         } catch (e) { /* never block the new request */ }
@@ -18956,22 +19605,26 @@ try {
 
   function resolveReminderTime(p, text, parsed, t) {
     if (/no time|whenever|no rush|just remember|someday|doesn'?t matter/.test(t)) {
-      var r0 = createReminder(p.task, null, 'no time set', null);
+      var r0 = createReminder(p.task, null, 'no time set', null, { hasTime: false, hasDate: false });
       rememberReminder(r0);
       return reply('Saved without a time — ' + p.task + '. It\'ll sit on the list until you want it.',
         [{ label: 'Give it a time', send: 'Remind me to ' + p.task + ' tomorrow at 10am' },
         { label: 'My reminders', send: 'What are my reminders?' }],
-        remCard([r0], 'New reminder'), ['Created reminder']);
+        remCard([r0], 'New reminder'), didCreate(r0));
     }
 
     var e = ents(parsed);
     var due = toDate(e.datetime);
     var dueText = trim(e.datetimeText);
     var rec = e.recurrence || null;
+    var flags = whenFlags(e);
 
     if (!due && !rec) {
       var g = parseWhen(text);
-      if (g) { due = toDate(g.date); dueText = dueText || trim(g.text); rec = rec || g.recurrence || null; }
+      if (g) {
+        due = toDate(g.date); dueText = dueText || trim(g.text); rec = rec || g.recurrence || null;
+        flags = whenFlags(g);
+      }
     }
     if (!due && !rec) return null;   // not a time answer — fall through to normal routing
 
@@ -18981,11 +19634,11 @@ try {
       return null;
     }
 
-    var r = createReminder(p.task, due, dueText || trim(text), rec);
+    var r = createReminder(p.task, due, dueText || trim(text), rec, flags);
     rememberReminder(r);
     return reply(confirmReminder(r),
       [{ label: 'Show my reminders', send: 'What are my reminders?' }, { label: 'Add another', send: 'Remind me to ' }],
-      remCard([r], 'New reminder'), ['Created reminder']);
+      remCard([r], 'New reminder'), didCreate(r));
   }
 
   /* "the second one" / "Elena" — answering a which-person question. */
@@ -19638,7 +20291,11 @@ try {
     if (!p) return null;
 
     var task = 'leave for ' + (trim(p.event.title) || 'your next thing');
-    var r = createReminder(task, p.leaveAt, 'to be on time', null);
+    // p.leaveAt is computed to the minute from the event and the travel estimate — the day
+    // and the hour are both known, neither is a guess. Say so, or reminders.js reads the
+    // prose "to be on time", finds no clock in it, and has BEE announce that it invented a
+    // time it actually worked out.
+    var r = createReminder(task, p.leaveAt, 'to be on time', null, { hasTime: true, hasDate: true });
     rememberReminder(r);
     return reply(
       'Done — I\'ll nudge you at ' + fmtTime(p.leaveAt) + ' to leave for ' + (trim(p.event.title) || 'it') + '.\n' +
@@ -19648,7 +20305,7 @@ try {
         { label: 'Make it 10 min earlier', send: 'actually make it ' + fmtTime(addMinutes(p.leaveAt, -10)) }
       ],
       remCard([r], 'Leave on time'),
-      ['Created reminder']
+      didCreate(r)
     );
   }
 
@@ -20196,6 +20853,11 @@ try {
 
    Additive helpers other modules may use (all safe to ignore):
      PB.trust.record(kind, label, detail)   — append to the access log
+     PB.trust.deviceOpen(name, detail, stopFn?) -> release()
+                                            — declare that real hardware opened.
+                                              Logs it, and if stopFn is given,
+                                              lets "turn off" in Trust actually
+                                              stop it. Call release() on close.
      PB.trust.checks()                      — run the live security checks
      PB.trust.bytes()                       — bytes currently stored
      PB.trust.probe()                       — Promise<result> real network probe
@@ -20224,14 +20886,33 @@ try {
 
   // Permission catalogue. `why` here is only the *fallback* copy shown when a
   // permission has never been asked for — the real reason comes from request().
+  //
+  // `live` is the honest bit: true only when something in this build actually
+  // asks for it. The last three are named in the contract but a web app cannot
+  // reach the phone's real location log, address book or calendar, so nothing
+  // asks — and the screen says so instead of implying six live capabilities.
   var PERMS = [
-    { name: 'camera',        title: 'Camera',        blurb: 'Take a photo for a moment.' },
-    { name: 'mic',           title: 'Microphone',    blurb: 'Talk to BEE instead of typing.' },
-    { name: 'notifications', title: 'Notifications', blurb: 'Let a reminder reach you when the app is closed.' },
-    { name: 'location',      title: 'Location',      blurb: 'Tie a reminder or a moment to a place.' },
-    { name: 'contacts',      title: 'Contacts',      blurb: 'Recognise the people you mention by name.' },
-    { name: 'calendar',      title: 'Calendar',      blurb: 'See what is already on your day.' }
+    { name: 'camera',        title: 'Camera',        live: true,
+      blurb: 'Take a photo for a moment.',
+      wired: 'Asked by Moments, the first time you tap “Take a photo”.' },
+    { name: 'mic',           title: 'Microphone',    live: true,
+      blurb: 'Talk to BEE instead of typing.',
+      wired: 'Asked by the bee and by Moments, the first time you tap a mic button.' },
+    { name: 'notifications', title: 'Notifications', live: true,
+      blurb: 'Let a reminder reach you when the app is closed.',
+      wired: 'Asked by Reminders, the first time you ask to be told at a time.' },
+    { name: 'location',      title: 'Location',      live: false,
+      blurb: 'Tie a reminder or a moment to a place.',
+      wired: 'Nothing in this build asks for it.' },
+    { name: 'contacts',      title: 'Contacts',      live: false,
+      blurb: 'Recognise the people you mention by name.',
+      wired: 'Nothing in this build asks for it.' },
+    { name: 'calendar',      title: 'Calendar',      live: false,
+      blurb: 'See what is already on your day.',
+      wired: 'Nothing in this build asks for it.' }
   ];
+
+  var LIVE_PERMS = PERMS.filter(function (p) { return p.live; });
 
   var KEY_LABELS = {
     'reminders':         'Reminders',
@@ -20447,7 +21128,7 @@ try {
    * ---------------------------------------------------------------------- */
 
   var airplaneOn = S.get(K_AIR, false) === true;
-  var guardReport = { fetch: false, xhr: false, beacon: false, socket: false, eventsource: false, media: false };
+  var guardReport = { fetch: false, xhr: false, beacon: false, socket: false, eventsource: false, media: false, speech: false };
 
   function blockedError(url, via) {
     var e = new Error('Personalbee airplane mode blocked a ' + via + ' request to ' + url);
@@ -20603,12 +21284,71 @@ try {
 
   /* ---------------------------------------------------------------------- *
    * 3b. Camera / microphone guard.
-   *     Two jobs: log every real hardware open, and make "revoke" mean
-   *     something — a revoked permission refuses new streams and stops any
-   *     stream that is already live.
+   *
+   *     There are three ways this app can reach real hardware, and they need
+   *     three different treatments. Being precise about which is which is the
+   *     whole point — a log that misses a channel is worse than no log.
+   *
+   *       1. getUserMedia — a live MediaStream we hold and can stop. Guarded
+   *          below. Nothing in this build calls it today; the guard is here so
+   *          that if anything ever does, it is logged and revocable from day
+   *          one rather than after someone notices.
+   *       2. SpeechRecognition — the phone's own speech-to-text. It is a
+   *          native transport: the audio goes to Apple or Google, and the
+   *          fetch/XHR/WebSocket guard above cannot see it, block it, or log
+   *          it. So we patch its prototype instead: every start() is logged,
+   *          refused when the mic is off or airplane mode is on, and stoppable.
+   *       3. A file input with `capture` — the system camera app. No stream
+   *          exists in this page, so there is nothing to hold and nothing to
+   *          stop. It is logged when it is opened (js/photo.js calls the
+   *          deviceOpen hook) and the copy says plainly that revoking cannot
+   *          reach into a picker the OS is running.
    * ---------------------------------------------------------------------- */
 
-  var liveStreams = []; // [{ names:[], stream }]
+  var liveStreams = []; // [{ names:[], stream }] — getUserMedia streams only
+  var heldDevices = []; // [{ id, name, stop|null, at }] — everything else
+
+  /**
+   * Declare that real hardware just opened. Returns a `release([detail])`
+   * function to call when it closes; calling it twice is safe.
+   *
+   * This is the documented hook for any module that opens a device the network
+   * guard cannot see:
+   *
+   *   var release = PB.trust.deviceOpen(
+   *     'mic',                                  // 'mic' | 'camera'
+   *     'Why this is honest, in one sentence.', // shown verbatim in the log
+   *     function () { thing.stop(); }           // optional: how to stop it
+   *   );
+   *   ... later ...
+   *   release();
+   *
+   * Pass a stop function only if it genuinely stops the hardware. Without one
+   * the entry is still logged, and turning the permission off in Trust will say
+   * honestly that it could not reach this one.
+   */
+  function deviceOpen(name, detail, stopFn) {
+    name = String(name || 'device');
+    var rec = {
+      id: uid(),
+      name: name,
+      stop: (typeof stopFn === 'function') ? stopFn : null,
+      at: Date.now()
+    };
+    heldDevices.push(rec);
+    record('device.open', capitalize(name) + ' opened',
+           detail || 'Opened on this device.',
+           { device: name, stoppable: !!rec.stop });
+    return function release(closeDetail) {
+      var i = heldDevices.indexOf(rec);
+      if (i === -1) return false; // already released, or already stopped by revoke
+      heldDevices.splice(i, 1);
+      record('device.close', capitalize(name) + ' closed',
+             closeDetail || 'Closed. It is not open any more.',
+             { device: name });
+      return true;
+    };
+  }
 
   (function () {
     var md = navigator && navigator.mediaDevices;
@@ -20668,6 +21408,104 @@ try {
     }
     return stopped;
   }
+
+  /**
+   * Stop everything open under `name`, by every route we actually have.
+   * Returns { stopped, unreachable } — counted separately, because a device we
+   * could not reach must not be reported as one we closed.
+   */
+  function stopDevices(name) {
+    var res = { stopped: stopStreamsFor(name), unreachable: 0 };
+    for (var i = heldDevices.length - 1; i >= 0; i--) {
+      var rec = heldDevices[i];
+      if (rec.name !== name) continue;
+      heldDevices.splice(i, 1); // remove first, so the owner's release() no-ops
+      if (rec.stop) {
+        var ok = false;
+        try { rec.stop(); ok = true; } catch (e) {}
+        if (ok) res.stopped++; else res.unreachable++;
+        record('device.close', capitalize(name) + ' stopped',
+               ok ? 'Stopped the moment you turned the permission off in Trust.'
+                  : 'Tried to stop it when you turned the permission off, and could not.',
+               { device: name });
+      } else {
+        res.unreachable++;
+        record('device.close', capitalize(name) + ' left to the system',
+               'This one is the phone’s own picker, not a stream this app holds, ' +
+               'so there was nothing here to stop. The next use has to ask you again.',
+               { device: name });
+      }
+    }
+    return res;
+  }
+
+  /* --- SpeechRecognition: the one hardware path the network guard can't see -- */
+
+  var SPEECH_DETAIL =
+    'Speech-to-text started. Your phone does the transcribing, which means it sends the ' +
+    'audio to Apple or Google to turn into words. This app stores no recording and sends nothing itself.';
+
+  (function () {
+    var ctors = [];
+    if (typeof window.SpeechRecognition === 'function') ctors.push(window.SpeechRecognition);
+    if (typeof window.webkitSpeechRecognition === 'function' &&
+        window.webkitSpeechRecognition !== window.SpeechRecognition) {
+      ctors.push(window.webkitSpeechRecognition);
+    }
+    if (!ctors.length) return;
+
+    for (var i = 0; i < ctors.length; i++) {
+      var proto = ctors[i] && ctors[i].prototype;
+      if (!proto) continue;
+      if (proto.__pbGuarded) { guardReport.speech = true; continue; }
+      if (typeof proto.start !== 'function') continue;
+      wrapSpeech(proto);
+      guardReport.speech = true;
+    }
+
+    function wrapSpeech(proto) {
+      var oStart = proto.start;
+      proto.start = function () {
+        var self = this;
+
+        if (permission('mic') === 'denied') {
+          record('device.refused', 'Microphone refused',
+                 'The microphone is turned off in Trust, so speech-to-text was never started.');
+          throw new Error('Personalbee: mic permission is off.');
+        }
+        if (airplaneOn) {
+          record('device.refused', 'Microphone refused',
+                 'Airplane mode is on. Speech-to-text has to send audio to Apple or Google, ' +
+                 'so it was not started.');
+          throw new Error('Personalbee: airplane mode is on.');
+        }
+
+        var out = oStart.apply(self, arguments);
+        var release = deviceOpen('mic', SPEECH_DETAIL, function () {
+          try {
+            if (typeof self.abort === 'function') self.abort();
+            else if (typeof self.stop === 'function') self.stop();
+          } catch (e) {}
+        });
+        var closed = function () {
+          try { self.removeEventListener('end', closed); } catch (e) {}
+          try { self.removeEventListener('error', closed); } catch (e) {}
+          release('Speech-to-text finished. The microphone is closed.');
+        };
+        try {
+          self.addEventListener('end', closed);
+          self.addEventListener('error', closed);
+        } catch (e) {
+          // No EventTarget on this engine — close the entry rather than leave
+          // the log claiming a mic is still open.
+          release('Speech-to-text started; this browser gave no end event, so the ' +
+                  'entry is closed immediately rather than left open.');
+        }
+        return out;
+      };
+      try { proto.__pbGuarded = true; } catch (e) {}
+    }
+  })();
 
   function capitalize(s) { return String(s).charAt(0).toUpperCase() + String(s).slice(1); }
 
@@ -20840,11 +21678,18 @@ try {
 
   function revoke(name) {
     writePerm(name, 'denied', (permRecord(name) || {}).why);
-    var stopped = stopStreamsFor(name);
-    record('permission.revoke', capitalize(name) + ' turned off',
-           stopped > 0
-             ? 'Turned off in Trust. ' + stopped + ' live track' + (stopped === 1 ? '' : 's') + ' stopped immediately.'
-             : 'Turned off in Trust. Any future use will have to ask again.');
+    var res = stopDevices(name);
+    var detail;
+    if (res.stopped > 0) {
+      detail = 'Turned off in Trust. ' + res.stopped + ' thing' + (res.stopped === 1 ? '' : 's') +
+               ' that was open stopped immediately.';
+    } else if (res.unreachable > 0) {
+      detail = 'Turned off in Trust. ' + res.unreachable + ' open handoff to the phone’s own ' +
+               'picker could not be reached from here — the app never held it. The next use has to ask again.';
+    } else {
+      detail = 'Turned off in Trust. Nothing was open. Any future use has to ask again.';
+    }
+    record('permission.revoke', capitalize(name) + ' turned off', detail);
     emit('permission:denied', { name: name });
     haptic();
     repaint();
@@ -20863,7 +21708,9 @@ try {
 
   var PERM_FACTS = {
     camera:        ['Photos stay in this app, on this phone.', 'No photo is ever uploaded.'],
-    mic:           ['Audio is used while you speak and then dropped.', 'No recording is stored or sent.'],
+    mic:           ['Your phone does the transcribing, so it sends the audio to Apple or Google to turn into words.',
+                    'This app stores no recording and sends nothing itself. The words land in the box, the audio is gone.',
+                    'Airplane mode turns it off — with airplane mode on, the microphone will not start at all.'],
     notifications: ['Used only for reminders you created.', 'No marketing, ever.'],
     location:      ['Read once, at the moment you ask.', 'No background tracking, no history.'],
     contacts:      ['Read on this device to match names you type.', 'Nothing is copied off the phone.'],
@@ -21045,11 +21892,12 @@ try {
     parts.push('XMLHttpRequest: ' + (window.XMLHttpRequest && window.XMLHttpRequest.prototype.__pbGuarded ? 'guarded' : 'NOT guarded'));
     parts.push('sendBeacon: ' + (guardReport.beacon ? 'guarded' : 'n/a'));
     parts.push('WebSocket: ' + (guardReport.socket ? 'guarded' : 'n/a'));
+    parts.push('SpeechRecognition: ' + (guardReport.speech ? 'guarded' : 'not present on this browser'));
     var guardOk = !!(window.fetch && window.fetch.__pbGuarded) &&
                   !!(window.XMLHttpRequest && window.XMLHttpRequest.prototype.__pbGuarded);
     out.push({
       pass: guardOk ? 'pass' : 'fail',
-      label: 'Every outbound channel runs through the guard',
+      label: 'Every outbound channel this page controls runs through the guard',
       evidence: parts.join(' · ')
     });
 
@@ -21121,18 +21969,37 @@ try {
                 '. No server, no account, no sync target. ' + storageNote
     });
 
-    // 5. Has anything actually left?
-    var sent = 0, blocked = 0;
+    // 5. Has any of *her data* actually left?
+    //
+    // The old wording here was 'Nothing has left this device', counted from
+    // net.attempt entries. That could not be true, and worse, it could not
+    // fail: noteOutbound() only fires for cross-origin requests, so the count
+    // structurally excluded the app's own files coming from the host, anything
+    // the service worker asks for in its own scope, and the audio that
+    // SpeechRecognition sends to Apple or Google. A check that cannot detect
+    // the thing it names is not a pass, it is a blind spot with a tick next to
+    // it. So the label is now exactly what the count can prove — your data —
+    // and the evidence names the three channels it does not watch, plus the
+    // one channel it now does watch separately: microphone opens.
+    var sent = 0, blocked = 0, micOpens = 0;
     for (var k = 0; k < log.length; k++) {
       if (log[k].kind === 'net.attempt') sent++;
       else if (log[k].kind === 'net.blocked') blocked++;
+      else if (log[k].kind === 'device.open' && log[k].device === 'mic') micOpens++;
     }
     out.push({
       pass: sent === 0 ? 'pass' : 'fail',
-      label: 'Nothing has left this device',
-      evidence: sent + ' outbound request' + (sent === 1 ? '' : 's') + ' sent, ' + blocked +
-                ' blocked by airplane mode. Every one is in the access log below.' +
-                (sent > 0 ? ' The sent ones were the network test or the optional Claude call — both start with you.' : '')
+      label: 'Nothing you typed or saved has left this device',
+      evidence:
+        sent + ' request' + (sent === 1 ? '' : 's') + ' carrying app data sent, ' + blocked +
+        ' blocked by airplane mode. Every one is in the access log below.' +
+        (sent > 0 ? ' The sent ones were the network test or the optional Claude call — both start with you.' : '') +
+        ' Counted here: cross-origin fetch, XMLHttpRequest, sendBeacon, WebSocket and EventSource from this page — ' +
+        'every route your reminders, moments, notes or chat could take out. ' +
+        'Not counted, and not claimed: the app’s own files arriving from the host that served it, requests the service ' +
+        'worker makes in its own scope, and speech-to-text audio, which the phone sends to Apple or Google over a ' +
+        'transport no page script can see. That last one is logged on its own instead — ' +
+        micOpens + ' microphone open' + (micOpens === 1 ? '' : 's') + ' on this device so far.'
     });
 
     // 6. Nothing asked for at launch.
@@ -21309,7 +22176,7 @@ try {
     var sent = 0;
     for (var i = 0; i < log.length; i++) if (log[i].kind === 'net.attempt') sent++;
     var granted = 0;
-    for (var j = 0; j < PERMS.length; j++) if (permission(PERMS[j].name) === 'granted') granted++;
+    for (var j = 0; j < LIVE_PERMS.length; j++) if (permission(LIVE_PERMS[j].name) === 'granted') granted++;
     var failing = 0;
     for (var k = 0; k < chk.length; k++) if (chk[k].pass === 'fail') failing++;
 
@@ -21319,10 +22186,10 @@ try {
       '<p class="pbt-lede">Everything on this screen is measured on your phone, right now. ' +
         'If a number is bad, it still says so.</p>' +
       '<div class="pbt-stats">' +
-        '<div class="pbt-stat"><b>' + num(sent) + '</b><span>requests sent off this phone, ever</span></div>' +
+        '<div class="pbt-stat"><b>' + num(sent) + '</b><span>requests carrying your data, sent off this phone</span></div>' +
         '<div class="pbt-stat"><b>' + num(ident.emails.length + ident.phones.length) + '</b><span>emails or phone numbers stored</span></div>' +
         '<div class="pbt-stat"><b>' + num(snap.bytes) + '</b><span>bytes held, in ' + num(snap.keys) + ' record' + (snap.keys === 1 ? '' : 's') + '</span></div>' +
-        '<div class="pbt-stat"><b>' + num(granted) + ' of ' + PERMS.length + '</b><span>permissions you have allowed</span></div>' +
+        '<div class="pbt-stat"><b>' + num(granted) + ' of ' + LIVE_PERMS.length + '</b><span>permissions this app can actually use, allowed</span></div>' +
       '</div>' +
       '<p class="pbt-hero-foot">' + (failing === 0
         ? 'All ' + chk.length + ' live checks pass. They are re-run every time you open this screen.'
@@ -21338,15 +22205,25 @@ try {
         '<div class="pbt-row-main">' +
           '<div class="pbt-row-title">Block all outbound network</div>' +
           '<div class="pbt-row-note">' + (on
-            ? 'On. Requests to any other origin are refused inside the app before the browser can send them.'
-            : 'Off. Only one thing would use the network: the optional Claude reply, and only if you added a key.') + '</div>' +
+            ? 'On. Requests to any other origin are refused inside the app before the browser can send them, and the microphone will not start.'
+            : 'Off. Two things would use the network: the optional Claude reply, if you added a key, and speech-to-text if you tap a mic.') + '</div>' +
         '</div>' +
         '<button type="button" class="pbt-toggle' + (on ? ' is-on' : '') + '" role="switch" aria-checked="' + (on ? 'true' : 'false') +
           '" data-act="airplane" aria-label="Airplane mode"><span class="pbt-knob"></span></button>' +
       '</div>' +
       '<div class="pbt-fine">' +
-        '<div><b>Blocked when on:</b> every request to a different origin — fetch, XMLHttpRequest, sendBeacon, WebSocket, EventSource.</div>' +
-        '<div><b>Still allowed:</b> <code>data:</code>, <code>blob:</code> and this app’s own files. None of those leave the device.</div>' +
+        '<div><b>Blocked when on:</b> every request to a different origin — fetch, XMLHttpRequest, sendBeacon, WebSocket, EventSource — ' +
+          'and the microphone, because the phone’s speech-to-text has to send audio to Apple or Google.</div>' +
+        '<div><b>Still allowed — your data:</b> <code>data:</code> and <code>blob:</code> URLs, which never touch a network at all, ' +
+          'and every read and write to storage on this phone. Nothing you typed, saved or photographed moves.</div>' +
+        '<div><b>Still allowed — the app’s own files:</b> and here is the part most privacy screens leave out. ' +
+          (location.protocol === 'file:'
+            ? 'You are running this from a file on the device, so right now even that touches nothing.'
+            : 'This app is served from ' + esc(location.host) + '. Unless the phone is genuinely offline, opening it fetches ' +
+              'the app’s own HTML, CSS and JavaScript from that host, and that host sees your IP address and your browser. ' +
+              'The service worker asks for those files first too, from its own scope where this switch cannot reach it. ' +
+              'Airplane mode is a promise about your data, not about how the app got onto the screen.') +
+        '</div>' +
         '<div><b>Unaffected either way:</b> reminders, moments, memory, chat parsing, the whole app. Try it.</div>' +
       '</div>' +
       '<div class="pbt-prove">' +
@@ -21496,43 +22373,66 @@ try {
     return html + '</section>';
   }
 
+  function permItem(p) {
+    var state = permission(p.name);
+    var rec = permRecord(p.name);
+    var when = rec && rec.decidedAt ? new Date(rec.decidedAt) : null;
+    var chip = state === 'granted' ? '<span class="pbt-chip pbt-chip-ok">Allowed</span>'
+             : state === 'denied'  ? '<span class="pbt-chip pbt-chip-bad">Off</span>'
+                                   : '<span class="pbt-chip pbt-chip-na">Never asked</span>';
+
+    var meta = p.live
+      ? (state === 'unasked'
+          ? 'Not asked yet. ' + p.wired
+          : (state === 'granted' ? 'Allowed ' : 'Turned off ') + (when ? ago(when) + ' · ' + clockTime(when) + ' ' + dayLabel(when) : ''))
+      : p.wired + ' A page in a browser cannot read your phone’s address book, calendar or location history, ' +
+        'so there is no feature here to ask on behalf of.' +
+        (state !== 'unasked' && when ? ' You set this from this screen ' + ago(when) + '; it still governs nothing.' : '');
+
+    return '<li class="pbt-perm' + (p.live ? '' : ' is-inert') + '">' +
+      '<div class="pbt-perm-top">' +
+        '<div class="pbt-perm-name">' + esc(p.title) + '</div>' + chip +
+      '</div>' +
+      '<div class="pbt-perm-why">' + esc((rec && rec.why) || p.blurb) + '</div>' +
+      '<div class="pbt-perm-meta">' + esc(meta) + '</div>' +
+      '<div class="pbt-perm-actions">' +
+        (state === 'granted'
+          ? '<button type="button" class="pbt-btn pbt-btn-small" data-act="revoke" data-name="' + esc(p.name) + '">Turn off</button>'
+          : '<button type="button" class="pbt-btn pbt-btn-small" data-act="grant" data-name="' + esc(p.name) + '">Turn on</button>') +
+        '<button type="button" class="pbt-btn pbt-btn-small pbt-btn-ghost" data-act="demo" data-name="' + esc(p.name) + '">See the request</button>' +
+      '</div>' +
+    '</li>';
+  }
+
   function buildPermissions() {
+    var i;
+    var dead = PERMS.filter(function (p) { return !p.live; });
+
     var html = '<section class="pbt-card">' +
       sectionHead(5, 'Permissions, asked just in time',
         'Nothing is requested at launch. Each one is asked the first time its feature is used.') +
+      '<div class="pbt-badge-title">Wired to something you can use today</div>' +
       '<ul class="pbt-perms">';
+    for (i = 0; i < LIVE_PERMS.length; i++) html += permItem(LIVE_PERMS[i]);
+    html += '</ul>';
 
-    for (var i = 0; i < PERMS.length; i++) {
-      var p = PERMS[i];
-      var state = permission(p.name);
-      var rec = permRecord(p.name);
-      var when = rec && rec.decidedAt ? new Date(rec.decidedAt) : null;
-      var chip = state === 'granted' ? '<span class="pbt-chip pbt-chip-ok">Allowed</span>'
-               : state === 'denied'  ? '<span class="pbt-chip pbt-chip-bad">Off</span>'
-                                     : '<span class="pbt-chip pbt-chip-na">Never asked</span>';
-
-      html += '<li class="pbt-perm">' +
-        '<div class="pbt-perm-top">' +
-          '<div class="pbt-perm-name">' + esc(p.title) + '</div>' + chip +
-        '</div>' +
-        '<div class="pbt-perm-why">' + esc((rec && rec.why) || p.blurb) + '</div>' +
-        '<div class="pbt-perm-meta">' + (
-          state === 'unasked'
-            ? 'Not asked yet. It will be asked the first time you use this, with that reason on screen.'
-            : (state === 'granted' ? 'Allowed ' : 'Turned off ') + (when ? ago(when) + ' · ' + clockTime(when) + ' ' + dayLabel(when) : '')
-        ) + '</div>' +
-        '<div class="pbt-perm-actions">' +
-          (state === 'granted'
-            ? '<button type="button" class="pbt-btn pbt-btn-small" data-act="revoke" data-name="' + esc(p.name) + '">Turn off</button>'
-            : '<button type="button" class="pbt-btn pbt-btn-small" data-act="grant" data-name="' + esc(p.name) + '">Turn on</button>') +
-          '<button type="button" class="pbt-btn pbt-btn-small pbt-btn-ghost" data-act="demo" data-name="' + esc(p.name) + '">See the request</button>' +
-        '</div>' +
-      '</li>';
+    if (dead.length) {
+      html += '<div class="pbt-badge-title">Named in the design, reachable by nothing</div>' +
+        '<p class="pbt-sub">' + dead.length + ' of the ' + PERMS.length + ' permissions this app defines have no caller ' +
+          'anywhere in the code, and a page in a browser could not honour them if they did. Listing all six together would ' +
+          'imply six live capabilities where there are ' + LIVE_PERMS.length + '. They stay on the screen, switches and all, ' +
+          'because quietly deleting them would hide that they were ever contemplated — but the switches govern nothing, ' +
+          'and saying so is the point of this group.</p>' +
+        '<ul class="pbt-perms">';
+      for (i = 0; i < dead.length; i++) html += permItem(dead[i]);
+      html += '</ul>';
     }
 
-    html += '</ul>' +
-      '<p class="pbt-fineprint">Turning one off takes effect immediately: a live camera or microphone stream is stopped ' +
-      'on the spot, and the next attempt to use it is refused before it reaches the hardware. ' +
+    html += '<p class="pbt-fineprint">Turning one off takes effect immediately, and here is exactly how far that reaches. ' +
+      'The next use is refused before any hardware opens — the microphone will not start and the camera will not be handed ' +
+      'a picker. Anything this app is holding open is closed on the spot: speech-to-text is stopped mid-sentence. ' +
+      'What it cannot do is reach into the phone’s own camera app once the OS has it on screen, because the app never had a ' +
+      'handle on it — that hand-off is logged, and the refusal applies to the next one. ' +
       'Turning off is exactly as many taps as turning on.</p>' +
     '</section>';
     return html;
@@ -21600,7 +22500,7 @@ try {
   function buildBee() {
     return '<section class="pbt-card">' +
       sectionHead(8, 'The bee tells you when it is on',
-        'One indicator, three states, no exceptions. Here is the contract in words.') +
+        'One indicator, four states, no exceptions. Here is the contract in words.') +
       '<ul class="pbt-bee">' +
         '<li><span class="pbt-bee-dot is-asleep" aria-hidden="true"></span>' +
           '<div><b>Asleep — eyes closed</b>' +
@@ -21611,11 +22511,18 @@ try {
           '<i>You called it. The bee only wakes when you tap it. It never wakes on a word, a sound, or a schedule ' +
           '— there is no wake-word listener, because a wake-word listener means the microphone is always on.</i></div></li>' +
         '<li><span class="pbt-bee-dot is-live" aria-hidden="true"></span>' +
-          '<div><b>Pulsing</b>' +
+          '<div><b>Pulsing — listening</b>' +
           '<i>The microphone is live this second. If it is pulsing, you are being heard; if it is not pulsing, you are not. ' +
-          'Every open of the microphone or the camera is written to the access log below, so the indicator can be checked ' +
-          'against the record rather than trusted on its own.</i></div></li>' +
+          'Your phone is doing the transcribing, which means the audio goes to Apple or Google to be turned into words — ' +
+          'so this state is also the one that leaves the phone, and airplane mode refuses to enter it.</i></div></li>' +
+        '<li><span class="pbt-bee-dot is-awake" aria-hidden="true"></span>' +
+          '<div><b>Hovering — thinking</b>' +
+          '<i>The mic has closed and BEE is working out what you meant. The fourth state, and the easiest one to leave off ' +
+          'a list like this: it looks busy, so it is worth saying that nothing is open during it.</i></div></li>' +
       '</ul>' +
+      '<p class="pbt-fineprint">Every time this app opens the microphone or the camera, a line is written in the access log ' +
+        'below — speech-to-text is logged where it starts and where it ends, and the hand-off to the phone’s camera app is ' +
+        'logged when it happens. So the indicator can be checked against the record rather than trusted on its own.</p>' +
       '<p class="pbt-fineprint">The bee itself lives at the bottom of every screen. This section is the promise it makes; ' +
         'the log is the proof it kept it.</p>' +
     '</section>';
@@ -21628,6 +22535,7 @@ try {
     'permission.revoke': 'permission turned off',
     'permission.use':    'permission used',
     'device.open':       'hardware opened',
+    'device.close':      'hardware closed',
     'device.refused':    'hardware refused',
     'net.attempt':       'network — sent',
     'net.blocked':       'network — blocked',
@@ -21789,6 +22697,7 @@ try {
 
     // additive, safe for other modules
     record: record,
+    deviceOpen: deviceOpen,
     revoke: revoke,
     checks: checks,
     bytes: bytes,
@@ -21797,7 +22706,8 @@ try {
     permissions: function () {
       return PERMS.map(function (p) {
         var rec = permRecord(p.name) || {};
-        return { name: p.name, title: p.title, state: permission(p.name), why: rec.why || '', decidedAt: rec.decidedAt || null };
+        return { name: p.name, title: p.title, live: !!p.live, state: permission(p.name),
+                 why: rec.why || '', decidedAt: rec.decidedAt || null };
       });
     }
   };
@@ -22064,9 +22974,20 @@ try {
     '<path d="M12 5v14M6 13l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" ' +
     'stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
+  /* The state line is the app's safety signal, so it has to reach a screen reader.
+     Two things make that work and both are easy to get wrong:
+       - it is a role="status" region (implicit aria-atomic — the whole line IS the
+         message), and it is never `hidden`, because aria-live never fires on a hidden
+         element. The .pb-hotbar below it is the *visual* echo and toggles `hidden`;
+         this line is the one that speaks.
+       - it ships inside the initial skeleton, already populated. A live region has to
+         exist in the DOM before anything is written into it or the first write is
+         silent — which is exactly the write that says the microphone went live. */
   var SKELETON = '' +
+    '<h1 class="sr-only">Conversation with BEE</h1>' +
     '<header class="pb-topbar">' +
-      '<button class="pb-beebtn" data-pb="beebtn" type="button" aria-label="BEE is asleep. Nothing is listening.">' +
+      '<button class="pb-beebtn" data-pb="beebtn" type="button" aria-haspopup="dialog" ' +
+        'aria-label="BEE is asleep. Nothing is listening.">' +
         '<span class="pb-ring" aria-hidden="true"></span>' +
         '<span class="pb-ring pb-ring-2" aria-hidden="true"></span>' +
         '<span class="pb-beebtn-face">' + beeSvg('') + '</span>' +
@@ -22074,7 +22995,8 @@ try {
       '</button>' +
       '<div class="pb-id">' +
         '<div class="pb-id-name">BEE</div>' +
-        '<div class="pb-id-sub" data-pb="sub">Asleep — nothing is listening</div>' +
+        '<div class="pb-id-sub" data-pb="sub" role="status" aria-live="polite">' +
+          'Asleep — nothing is listening</div>' +
       '</div>' +
       '<button class="pb-more" data-pb="more" type="button" aria-label="Everything BEE holds">' + MORE_SVG + '</button>' +
     '</header>' +
@@ -22082,11 +23004,13 @@ try {
       '<span class="pb-banner-dot" aria-hidden="true"></span>' +
       '<span>Offline — running entirely on this phone.</span>' +
     '</div>' +
-    '<div class="pb-hotbar" data-pb="hotbar" hidden>' +
+    // the visible mic-live bar; `hidden` toggles, so the spoken version lives on .pb-id-sub
+    '<div class="pb-hotbar" data-pb="hotbar" aria-hidden="true" hidden>' +
       '<span class="pb-hotdot" aria-hidden="true"></span>' +
       '<span>Listening — the mic is live</span>' +
     '</div>' +
-    '<div class="pb-transcript" data-pb="transcript" role="log" aria-live="polite"></div>' +
+    '<div class="pb-transcript" data-pb="transcript" role="log" aria-live="polite" ' +
+      'aria-label="Conversation with BEE"></div>' +
     '<button class="pb-jump" data-pb="jump" type="button" aria-label="Jump to the latest message" hidden>' +
       DOWN_SVG +
     '</button>' +
@@ -22148,11 +23072,21 @@ try {
     built = true;
 
     loadTranscript();
-    renderAll();
     wire();
     syncOffline();
     setState('asleep');
-    greetIfEmpty();
+
+    // Painting the transcript in the same tick that the skeleton lands is the documented
+    // way to make a live region not fire: the browser treats everything written before
+    // the region has settled as initial content, so the log stays mute and the very first
+    // state change can be swallowed with it. Give the skeleton a frame to register first.
+    var paint = function () {
+      if (!built) return;
+      renderAll();
+      greetIfEmpty();
+    };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(paint);
+    else setTimeout(paint, 0);
   }
 
   function wire() {
@@ -22281,12 +23215,28 @@ try {
     listening: 'BEE is listening. The microphone is live.',
     thinking: 'BEE is thinking.'
   };
-  var STATE_LINES = [
+  // Built on each open, not at load: whether the answer is computed here or by Claude
+  // depends on a key that can be added at any time.
+  function thinkingLine() {
+    var cloud = false;
+    try {
+      if (PB.brain && typeof PB.brain.status === 'function') cloud = !!(PB.brain.status() || {}).cloud;
+      else if (PB.brain && typeof PB.brain.cloudActive === 'function') cloud = !!PB.brain.cloudActive();
+    } catch (e) {}
+    return cloud
+      ? 'Working out what you meant. Open-ended questions go to Claude, so this one may leave the phone — reminders and anything private never do.'
+      : 'I\u2019m working on what you just said \u2014 on this phone.';
+  }
+
+  function stateLines() { return [
     ['asleep', '😴', 'Asleep', 'Eyes shut. Nothing is listening, nothing is being recorded.'],
     ['awake', '👀', 'Awake', 'I’m following the conversation. Still no microphone.'],
     ['listening', '🎙', 'Listening', 'The mic is live right now. You’ll see me pulse, and the bar says so.'],
-    ['thinking', '💭', 'Thinking', 'I’m working on what you just said — on this phone.']
-  ];
+    // Not "on this phone": once a Claude key is saved and airplane mode is off, an
+    // open-ended turn is answered by the API — and that is exactly when thinking takes
+    // longest and someone is most likely to read this line. Ask rather than assert.
+    ['thinking', '💭', 'Thinking', thinkingLine()]
+  ]; }
 
   function state() { return curState; }
 
@@ -22297,7 +23247,10 @@ try {
 
     root.setAttribute('data-state', s);
     el.beebtn.setAttribute('aria-label', ARIA[s]);
-    el.sub.textContent = SUBTITLE[s];
+    // Only write when the text actually changes. mount() re-asserts the current state
+    // every time she comes home, and re-writing identical text into a live region
+    // makes the screen reader say it again for no reason.
+    if (el.sub && el.sub.textContent !== SUBTITLE[s]) el.sub.textContent = SUBTITLE[s];
     if (el.hotbar) {
       var wasHot = !el.hotbar.hidden;
       el.hotbar.hidden = (s !== 'listening');
@@ -22326,8 +23279,9 @@ try {
     var wrap = node('div', 'pb-explain');
     wrap.appendChild(node('p', 'pb-explain-lead',
       'The bee in the corner reports what I am actually doing. It is the one thing on this screen that never flatters me.'));
-    for (var i = 0; i < STATE_LINES.length; i++) {
-      var line = STATE_LINES[i];
+    var SL = stateLines();
+    for (var i = 0; i < SL.length; i++) {
+      var line = SL[i];
       var row = node('div', 'pb-explain-row' + (line[0] === curState ? ' is-now' : ''));
       row.appendChild(node('span', 'pb-explain-ico', line[1]));
       var mid = node('span', 'pb-explain-mid');
@@ -22492,6 +23446,10 @@ try {
   function renderMsg(m, isLast) {
     var wrap = node('div', 'pb-msg pb-msg-' + (m.role === 'user' ? 'user' : 'bee'));
     wrap.setAttribute('data-id', m.id);
+
+    // Who said it is carried entirely by which side of the screen the bubble sits on
+    // and what colour it is — nothing a screen reader can see. Say it out loud.
+    wrap.appendChild(node('span', 'sr-only', m.role === 'user' ? 'You said:' : 'BEE said:'));
 
     if (m.role !== 'user') {
       var av = node('div', 'pb-avatar');
@@ -22905,12 +23863,14 @@ try {
     if (typingNode || !el.transcript) return;
     removeEmptyState();
     typingNode = node('div', 'pb-msg pb-msg-bee pb-typing-msg');
+    // The state line already says "Thinking…" out loud; three bouncing dots landing in a
+    // live log as well would just make BEE talk over itself.
+    typingNode.setAttribute('aria-hidden', 'true');
     var av = node('div', 'pb-avatar');
     av.innerHTML = beeSvg('pb-portrait');
     typingNode.appendChild(av);
     var col = node('div', 'pb-col');
     var b = node('div', 'pb-bubble pb-typing');
-    b.setAttribute('aria-label', 'BEE is thinking');
     b.innerHTML = '<span></span><span></span><span></span>';
     col.appendChild(b);
     typingNode.appendChild(col);
