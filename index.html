@@ -5315,7 +5315,7 @@ img { max-width: 100%; display: block; }
 </div>
 
 <script>
-window.PB_BUILD = "2026-08-17 05:35 UTC";
+window.PB_BUILD = "2026-08-20 07:13 UTC";
 
 /* ===== js/core.js ===== */
 try {
@@ -7737,6 +7737,68 @@ window.PB = window.PB || {};
     return r;
   }
 
+  /* ---- numeric intervals: "every 20 minutes", "every 2 hours", "every 3 days" ----
+   *
+   * The word-only forms ("every hour", "every day") were already handled below, but a
+   * NUMBER in front of the unit matched nothing. "remind me to drink water every 30
+   * seconds" came back with recurrence null and the whole interval phrase still stuck
+   * inside the task — "Drink water every 30 seconds" — so the reminder repeated never
+   * and nothing anywhere said so.
+   *
+   * The parsed rule carries `every` (the count), `unit` and `everyMs` alongside `freq`.
+   * `interval` is deliberately NOT set for sub-day cadences: reminders.js reads
+   * `interval` as a WEEK step ("every other Tuesday"), so putting 20 there would make
+   * the confirm-back read "every other week" about a twenty-minute repeat. Weeks are the
+   * one unit whose step reminders.js already walks, so that one does set it.
+   */
+  var RE_EVERY_N = new RegExp(
+    '\\b(?:every|each|evry)\\s+(\\d{1,4}|' + NUM_SRC + ')\\s*' +
+    '(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|wks?)\\b', 'i');
+
+  var INTERVAL_UNITS = {
+    second: { ms: 1000, freq: 'secondly', subDay: true },
+    minute: { ms: 60000, freq: 'minutely', subDay: true },
+    hour: { ms: 3600000, freq: 'hourly', subDay: true },
+    day: { ms: 86400000, freq: 'daily', subDay: false },
+    week: { ms: 7 * 86400000, freq: 'weekly', subDay: false }
+  };
+
+  function intervalUnit(word) {
+    var u = String(word || '').toLowerCase();
+    if (/^sec/.test(u)) return 'second';
+    if (/^min/.test(u)) return 'minute';
+    if (/^(hour|hr)/.test(u)) return 'hour';
+    if (/^day/.test(u)) return 'day';
+    if (/^(week|wk)/.test(u)) return 'week';
+    return null;
+  }
+
+  function markHourly(rec) {
+    rec.every = 1; rec.unit = 'hour'; rec.everyMs = 3600000; rec.subDay = true;
+    return rec;
+  }
+
+  function scanIntervalRecurrence(st) {
+    grab(st, RE_EVERY_N, function (m) {
+      var n = toNum(m[1]);
+      if (!(n >= 1) || n > 9999) return false;
+      var unit = intervalUnit(m[2]);
+      if (!unit) return false;
+      var spec = INTERVAL_UNITS[unit];
+      var days = (unit === 'day') ? [0, 1, 2, 3, 4, 5, 6] : [];
+      if (unit === 'week') days = [st.now.getDay()];
+      var rec = newRecurrence(spec.freq, days);
+      rec.every = n;
+      rec.unit = unit;
+      rec.everyMs = n * spec.ms;
+      if (spec.subDay) rec.subDay = true;
+      // Only the week step is one reminders.js already honours; see the note above.
+      if (unit === 'week' && n > 1) rec.interval = n;
+      st.recurrence = rec;
+      return true;
+    });
+  }
+
   var RE_EVERY = new RegExp(
     '\\b(?:every|each|evry)\\s+(other\\s+)?(' +
     '(?:' + DOW_SRC + '|weekdays?|weekends?|days?|weeks?|months?|years?|mornings?|afternoons?|evenings?|nights?|hours?)' +
@@ -7747,6 +7809,10 @@ window.PB = window.PB || {};
   var RE_WEEKDAYS_PLAIN = /\b(?:on\s+)?(weekdays|weekends)\b/i;
 
   function scanRecurrence(st) {
+    // Numbered intervals first: "every 2 hours" must not be read as a bare "every ... hours".
+    scanIntervalRecurrence(st);
+    if (st.recurrence) return;
+
     grab(st, RE_EVERY, function (m) {
       var other = !!m[1];
       var body = m[2].toLowerCase();
@@ -7775,6 +7841,9 @@ window.PB = window.PB || {};
       // "every other week" with no weekday -> anchor on today's weekday
       if ((freq === 'weekly' || freq === 'biweekly') && !days.length) days = [st.now.getDay()];
       st.recurrence = newRecurrence(freq, days.sort(function (a, b) { return a - b; }), interval);
+      // "every hour" is the same cadence as "every 1 hour" and must describe itself the
+      // same way, or the two phrasings answer differently to the same question.
+      if (freq === 'hourly') markHourly(st.recurrence);
       return true;
     });
     if (st.recurrence) return;
@@ -7787,7 +7856,7 @@ window.PB = window.PB || {};
       else if (w === 'biweekly' || w === 'fortnightly') st.recurrence = newRecurrence('biweekly', [st.now.getDay()], 2);
       else if (w === 'monthly') st.recurrence = newRecurrence('monthly', []);
       else if (w === 'yearly' || w === 'annually') st.recurrence = newRecurrence('yearly', []);
-      else if (w === 'hourly') st.recurrence = newRecurrence('hourly', []);
+      else if (w === 'hourly') { st.recurrence = newRecurrence('hourly', []); markHourly(st.recurrence); }
       return true;
     });
     if (st.recurrence) return;
@@ -8177,10 +8246,26 @@ window.PB = window.PB || {};
   /* Next occurrence for a recurrence rule. */
   function nextRecurrence(rec, now, h, m) {
     var base = setTime(now, h, m);
+    // A sub-day cadence is self-timing: the next one is simply that far from now. Seconds
+    // are kept for sub-minute rules, because rounding a 30-second interval to the minute
+    // would quietly answer a different question from the one she asked.
+    if (rec.subDay && rec.everyMs > 0) {
+      var ix = new Date(now.getTime() + rec.everyMs);
+      if (rec.everyMs >= 60000) ix.setSeconds(0, 0);
+      else ix.setMilliseconds(0);
+      return ix;
+    }
     if (rec.freq === 'hourly') {
       var nx = new Date(now.getTime() + 3600000);
       nx.setSeconds(0, 0);
       return nx;
+    }
+    // "every 3 days" steps by the interval she asked for, not by one day.
+    if (rec.freq === 'daily' && rec.every > 1) {
+      var dn = setTime(now, h, m);
+      var dguard = 0;
+      while (dn.getTime() <= now.getTime() && dguard++ < 400) dn = addDays(dn, rec.every);
+      return dn;
     }
     if (rec.freq === 'monthly') {
       var mdom = validDom(rec.dayOfMonth) || now.getDate();
@@ -8244,6 +8329,15 @@ window.PB = window.PB || {};
 
       if (st.recurrence) {
         var rh = (h == null) ? 9 : h, rm = (h == null) ? 0 : m;
+        // A sub-day cadence has no wall-clock time to keep. Stamping one on made the
+        // confirm-back append "at 9am" to a repeat that ignores the clock entirely, and
+        // sent clarify() off to ask "what time?" about "every 20 minutes" — a question
+        // she had already answered.
+        if (st.recurrence.subDay) {
+          date = nextRecurrence(st.recurrence, now, rh, rm);
+          hasTime = true;
+          dayScore = 0.9; timeScore = 0.9;
+        } else {
         st.recurrence.time = pad2(rh) + ':' + pad2(rm);
         // Month/year rules need the day they were set for, kept apart from any date we
         // happen to land on, so rolling forward never drifts off a 31st or a 29 Feb.
@@ -8255,6 +8349,7 @@ window.PB = window.PB || {};
         date = nextRecurrence(st.recurrence, now, rh, rm);
         dayScore = 0.9;
         if (h == null) timeScore = 0.45;
+        }
       } else if (st.anchorDate) {
         if (h == null) { h = 9; m = 0; timeScore = 0.45; }
         date = setTime(st.anchorDate, h, m);
@@ -16474,6 +16569,78 @@ try {
     ));
   }
 
+  /* A task the parser refused to name is not a task.
+   *
+   * "Remind me to" used to fall straight through to stripLead(), whose
+   * `(to |about |that )?` group needs a TRAILING SPACE — with nothing after "to" the
+   * group can't match, so only "remind me " came off and the residue "to" survived to
+   * become a reminder literally called "to". The carry-over then preserved it faithfully:
+   * `I kept "to" on the list`. Two features working exactly as written, producing garbage
+   * and then protecting it.
+   *
+   * So: one word of pure scaffolding is not something she asked to be reminded about. */
+  var STOPWORD_TASK = new RegExp('^(?:to|too|a|an|the|it|its|that|this|and|or|but|for|about|' +
+    'me|my|mine|i|of|on|in|at|is|are|was|be|do|does|did|so|up|off|ok|okay|um|uh|er|' +
+    'yeah|yea|yes|yep|no|nope|please|pls|thanks|hey|hi|hello|bee|remind|reminder)$', 'i');
+
+  function realTask(s) {
+    var t = trim(String(s == null ? '' : s));
+    if (!t) return null;
+    if (!/[a-z0-9]/i.test(t)) return null;            // punctuation only
+    if (t.length < 2) return null;
+    // Every word is scaffolding, so nothing was actually named. "Remind me to" leaves
+    // "to"; a bare "remind me" leaves "remind me" whole, because stripLead's pattern needs
+    // a trailing space that isn't there. Both used to become reminders.
+    var words = t.toLowerCase().split(/[^a-z0-9']+/);
+    for (var i = 0; i < words.length; i++) {
+      if (words[i] && !STOPWORD_TASK.test(words[i])) return t;
+    }
+    return null;
+  }
+
+  function askWhatFor() {
+    return 'Happy to — what should I remind you about? Say it the way you\'d say it out ' +
+      'loud, and give me a time if you have one.';
+  }
+
+  function askWhatForChips() {
+    return [
+      { label: 'Drink water hourly', send: 'Remind me to drink water every hour' },
+      { label: 'Call someone back', send: 'Remind me to call the dentist tomorrow at 10am' },
+      { label: 'What\'s on my list?', send: 'What are my reminders?' }
+    ];
+  }
+
+  /* ---- how tight a repeat this app is allowed to promise ----
+   *
+   * Reminders fire from a timer while Personalbee is open; when it's closed they land the
+   * moment it opens again. Below a few minutes that stops being a schedule and starts
+   * being a claim nobody can keep. The product's one rule is that it never claims a
+   * delivery it can't make — so a sub-floor interval gets an honest counter-offer in
+   * BEE's voice, not silence and not a silent round-up. */
+  var MIN_REPEAT_MS = 5 * 60000;
+  var MIN_REPEAT_LABEL = 'every 5 minutes';
+
+  function tooTightToPromise(rec) {
+    return !!(rec && rec.subDay && rec.everyMs > 0 && rec.everyMs < MIN_REPEAT_MS);
+  }
+
+  function flooredRecurrence() {
+    return {
+      freq: 'minutely', days: [], time: null,
+      every: 5, unit: 'minute', everyMs: MIN_REPEAT_MS, subDay: true
+    };
+  }
+
+  /* How BEE says a cadence out loud. reminders.js only knows the day-and-up vocabulary and
+   * renders anything else as "on repeat", which tells her nothing about what will happen. */
+  function intervalPhrase(rec) {
+    if (!rec || !rec.every || !rec.unit) return null;
+    var n = rec.every;
+    if (n === 1) return 'every ' + rec.unit;
+    return 'every ' + n + ' ' + rec.unit + 's';
+  }
+
   /* ------------------------------------------------------------------ *
    * Module accessors (all guarded)
    * ------------------------------------------------------------------ */
@@ -16635,7 +16802,29 @@ try {
     return ['Created reminder'];
   }
 
+  /* reminders.js's recurrence vocabulary stops at "every day"; anything faster comes back
+   * as "on repeat", which tells her nothing about what she just agreed to. BEE says the
+   * cadence out loud, and says which half of it depends on the app being open. */
+  function subDayConfirm(r) {
+    var rc = r && r.recurrence;
+    if (!rc || !rc.subDay) return null;
+    var task = trim(r.text);
+    var phrase = intervalPhrase(rc);
+    if (!task || !phrase) return null;
+    if (isArr(r.tags) && r.tags.indexOf(UNSAVED_TAG) !== -1) return null;   // failure copy wins
+
+    var d = toDate(r.due);
+    var out = 'Got it — ' + task + ', ' + phrase + '.';
+    if (d) out += ' First one at ' + fmtTime(d) + '.';
+    out += '\n\nSo it\'s not a surprise later: a repeat this tight runs off a timer while ' +
+      'Personalbee is open. If it\'s closed, you\'ll get it the moment you open it again.';
+    return out;
+  }
+
   function confirmReminder(r) {
+    var sub = subDayConfirm(r);
+    if (sub) return sub;
+
     var s = call(PB.reminders, ['formatConfirm'], [r], null);
     if (typeof s === 'string' && trim(s)) return trim(s);
 
@@ -17479,6 +17668,39 @@ try {
     };
   }
 
+  /* A chip is a promise that the thing behind it exists.
+   *
+   * Every handler builds its own chip list, so a per-handler check would have to be right
+   * in forty places and stay right. Filtering here is the only version that can't be
+   * forgotten: offering "What do you know about me?" in a build with memory switched off
+   * advertises a feature whose only possible answer is "that isn't built". */
+  /* Matched against the chip's `send` — the text that will actually be routed — not its
+   * label. Labels lie: "What's left?" and "What's on my list?" both send "What are my
+   * reminders?", and gating those would hide reminders from a reminders-only build. */
+  var CHIP_GATE = [
+    [/know about me|noticed about me|have you noticed|what do you store|^forget (what|that)/i, 'memory'],
+    [/what'?s next|what'?s on (today|tomorrow|this|the)|who do you know|^who is |^tell me about |brand work|what'?s outstanding|what should i do today/i, 'assistant'],
+    [/my moments|photo of|photos of/i, 'moments']
+  ];
+
+  // Privacy is not a gated feature — erasing your data must stay reachable even though
+  // the phrasing looks like a memory question.
+  var CHIP_ALWAYS = /^(erase|delete) /i;
+
+  var SAFE_CHIPS = [
+    { label: 'Remind me to…', send: 'Remind me to ' },
+    { label: 'What\'s on my list?', send: 'What are my reminders?' }
+  ];
+
+  function chipAllowed(c) {
+    var send = String(c.send || c.label || '');
+    if (CHIP_ALWAYS.test(send)) return true;
+    for (var i = 0; i < CHIP_GATE.length; i++) {
+      if (CHIP_GATE[i][0].test(send) && !featureOn(CHIP_GATE[i][1])) return false;
+    }
+    return true;
+  }
+
   function normChips(chips) {
     var out = [];
     arr(chips).forEach(function (c) {
@@ -17486,6 +17708,11 @@ try {
       if (typeof c === 'string') out.push({ label: c, send: c });
       else if (c.label) out.push({ label: String(c.label), send: String(c.send || c.label) });
     });
+    var had = out.length;
+    out = out.filter(chipAllowed);
+    // Everything on offer was gated off. Say what IS here rather than showing nothing —
+    // but never invent chips for a handler that deliberately offered none.
+    if (had && !out.length) out = SAFE_CHIPS.slice();
     return out.slice(0, 4);
   }
 
@@ -17538,8 +17765,14 @@ try {
 
   function hReminderCreate(text, parsed) {
     var e = ents(parsed);
-    var task = trim(e.task) || stripLead(text);
-    if (!task) task = 'that';
+    // The parser is the authority on whether she actually named a thing to do. When it
+    // says no, ask — never assemble one out of the leftovers.
+    var task = realTask(e.task) || realTask(stripLead(text));
+
+    if (!task) {
+      state.pending = null;
+      return reply(askWhatFor(), askWhatForChips(), null, []);
+    }
 
     var due = toDate(e.datetime);
     var dueText = trim(e.datetimeText);
@@ -17569,6 +17802,9 @@ try {
         flags = { hasTime: true, hasDate: true };
       }
     }
+
+    // Faster than we can actually deliver — say so, and offer the nearest real thing.
+    if (tooTightToPromise(rec)) return offerFloor(task, rec);
 
     // Never guess a time. Ask.
     if (!due && !rec) {
@@ -18876,21 +19112,38 @@ try {
 
   /* --- capability.query ----------------------------------------------- */
 
+  /* "What can you do?" is the one answer that must never list a feature that is switched
+   * off — it is the question whose entire job is to be accurate about scope. Each line is
+   * gated on the flag that actually powers it. */
   function hCapabilityQuery() {
     var lines = [];
     lines.push('Here\'s what I can actually do for you:');
     lines.push('· Reminders — "remind me to send Priya the cut Thursday at 3" and I\'ll hold it until it\'s done');
-    lines.push('· Your day — what\'s on, what\'s next, who you\'re seeing, when to leave');
-    lines.push('· People — describe someone however you remember them and I\'ll probably find them');
-    lines.push('· Brand work — what\'s outstanding, when it\'s due, who\'s waiting on it');
-    lines.push('· Moments — save a photo with a note, find it later by what you wrote');
-    lines.push('· Priorities — "what should I do today?" and I\'ll actually rank it by what matters');
+    lines.push('· Repeats — "every weekday at 8", "every 20 minutes" — down to ' + MIN_REPEAT_LABEL + ', which is as tight as I can honestly promise');
+    if (featureOn('assistant')) {
+      lines.push('· Your day — what\'s on, what\'s next, who you\'re seeing, when to leave');
+      lines.push('· People — describe someone however you remember them and I\'ll probably find them');
+      lines.push('· Brand work — what\'s outstanding, when it\'s due, who\'s waiting on it');
+    }
+    if (featureOn('moments')) {
+      lines.push('· Moments — save a photo with a note, find it later by what you wrote');
+    }
+    if (featureOn('assistant')) {
+      lines.push('· Priorities — "what should I do today?" and I\'ll actually rank it by what matters');
+    }
     lines.push('');
+    if (remindersOnly()) {
+      // Naming the switched-off features here would put them back on the menu. Say the
+      // shape of the limit instead, and stop.
+      lines.push('That\'s genuinely the whole list right now. The rest of what I\'ll ' +
+        'eventually do isn\'t built yet, so I won\'t pretend otherwise.');
+    }
     lines.push('What I won\'t do: send anything, post anything, or touch your email, DMs or camera roll. Everything stays right here on this phone. I work fine with no signal at all.');
 
     return reply(lines.join('\n'), [
       { label: 'What\'s next?', send: 'What\'s next today?' },
       { label: 'Make a reminder', send: 'Remind me to ' },
+      { label: 'What\'s on my list?', send: 'What are my reminders?' },
       { label: 'What do you store?', send: 'What do you store about me?' }
     ], null, []);
   }
@@ -18959,7 +19212,7 @@ try {
         [{ label: 'What\'s next?', send: 'What\'s next today?' }], null, [], true);
     }
     if (/what('| i)s up|what('| i)s happening|what('| i)s going on|whats up|wassup|wazup/.test(t)) {
-      var ev = nextEvent(now());
+      var ev = featureOn('assistant') ? nextEvent(now()) : null;
       var over = overdueReminders();
       var lines = [];
       if (over.length) lines.push(trim(over[0].text) + ' is still sitting past its time — that\'s the main thing.');
@@ -19439,7 +19692,9 @@ try {
         [{ label: 'Tonight', send: 'Remind me to ' }, { label: 'My reminders', send: 'What are my reminders?' }],
         null, [], true);
     }
-    if (/today|tomorrow|tonight|schedule|calendar|free|busy|shoot|meeting/.test(t)) {
+    // These four branches each describe a feature. Offering them when the feature is off
+    // is the same leak as the chips: an answer that can only ever be "that isn't built".
+    if (featureOn('assistant') && /today|tomorrow|tonight|schedule|calendar|free|busy|shoot|meeting/.test(t)) {
       var ev0 = nextEvent(now());
       return reply(
         ev0
@@ -19448,19 +19703,19 @@ try {
         [{ label: 'Rest of today', send: 'What\'s on today?' }, { label: 'Tomorrow', send: 'What\'s on tomorrow?' }],
         null, [], true);
     }
-    if (/who|him|her|guy|girl|met|number|contact|person/.test(t)) {
+    if (featureOn('assistant') && /who|him|her|guy|girl|met|number|contact|person/.test(t)) {
       return reply(
         'Tell me whatever you remember about them — where you met, what they do, what they look like, anything. I\'m good at finding people from fuzzy descriptions.',
         [{ label: 'Who do you know?', send: 'Who do you know?' }],
         null, [], true);
     }
-    if (/photo|picture|pic|shot|selfie|moment/.test(t)) {
+    if (featureOn('moments') && /photo|picture|pic|shot|selfie|moment/.test(t)) {
       return reply(
         'I find photos by the note you wrote on them — your words, not my guesses. What did you call it?',
         [{ label: 'Open moments', send: 'Show my moments' }],
         null, [], true);
     }
-    if (/brand|deal|deliverable|invoice|paid|due|client|rate|money/.test(t)) {
+    if (featureOn('assistant') && /brand|deal|deliverable|invoice|paid|due|client|rate|money/.test(t)) {
       return reply(
         'I can pull up what\'s outstanding on the brand side and when it\'s all due. Want the rundown?',
         [{ label: 'What\'s outstanding?', send: 'What brand work is outstanding?' }],
@@ -19499,7 +19754,7 @@ try {
 
     // Barely any signal at all — don't pretend to interpret it.
     if (trim(text).replace(/[^a-z0-9]/gi, '').length < 3) {
-      var evNow = nextEvent(now());
+      var evNow = featureOn('assistant') ? nextEvent(now()) : null;
       return reply(
         evNow && sameDay(toDate(evNow.start), now())
           ? ('I\'m here — tell me more? Meanwhile, ' + (trim(evNow.title) || 'your next thing') + ' is ' + fmtRelative(toDate(evNow.start)) + '.')
@@ -19514,7 +19769,11 @@ try {
     // next on the calendar reads as evasion — it answers a question she did
     // not ask, and it hides the fact that BEE came up empty.
     if (isQuestion(text)) {
-      lines.push('I don\'t have anything on that yet — but I\'d like to. Tell me and I\'ll remember it.');
+      // "I'll remember it" is a memory promise. With memory off, it's a promise nothing
+      // in this build can keep.
+      lines.push(featureOn('memory')
+        ? 'I don\'t have anything on that yet — but I\'d like to. Tell me and I\'ll remember it.'
+        : 'I can\'t answer that one — right now I only do reminders. Anything you\'d rather not forget, though, I\'ll hold onto properly.');
       chips.push({ label: 'What do you know about me?', send: 'What do you know about me?' });
       chips.push({ label: 'What can you do?', send: 'What can you do?' });
       return reply(lines.join('\n'), chips, null, [], true);
@@ -19524,6 +19783,16 @@ try {
       lines.push(nextOpener() + ' But hey — ' + trim(over[0].text) + ' is still sitting there past its time. Want to knock it out, or should I push it?');
       chips.push({ label: 'Done with it', send: 'done with ' + over[0].text });
       chips.push({ label: 'Push it an hour', send: 'snooze ' + over[0].text + ' 60 minutes' });
+    } else if (remindersOnly()) {
+      // The leak the product owner found: this build has memory and the whole assistant
+      // switched off, and the fallback was still offering "your day, your people, what's
+      // coming up" and counting things it knows about her. Say what is actually here.
+      var open = openReminders();
+      lines.push(nextOpener() + ' Reminders are the thing I do properly right now — tell me ' +
+        'something you\'d rather not forget and I\'ll read the time back to you.' +
+        (open.length ? ' You\'ve got ' + open.length + ' on the list.' : ''));
+      chips.push({ label: 'Remind me to…', send: 'Remind me to ' });
+      chips.push({ label: 'What\'s on my list?', send: 'What are my reminders?' });
     } else {
       var mem = memRecall('');
       if (mem.length) {
@@ -19566,17 +19835,20 @@ try {
       // asked when, then moved on — the task itself was never retracted, so keep it
       // undated rather than losing it. Losing it silently is the failure mode this
       // product is built around.
-      if (p.kind === 'reminder.time' && trim(p.task)) {
+      // Only a genuinely-named task is worth keeping. Carrying over "to" is how a parser
+      // slip became a permanent row on her list, announced as though it were a rescue.
+      if ((p.kind === 'reminder.time' || p.kind === 'reminder.faster') && realTask(p.task)) {
         try {
           var kept = createReminder(p.task, null, 'no time set', null, { hasTime: false, hasDate: false });
           rememberReminder(kept);
-          state.carriedOver = trim(p.task);
+          state.carriedOver = realTask(p.task);
         } catch (e) { /* never block the new request */ }
       }
       state.pending = null;
       return null;   // fall through to normal handling
     }
 
+    if (p.kind === 'reminder.faster') return resolveFaster(p, text, parsed, t);
     if (p.kind === 'reminder.time') return resolveReminderTime(p, text, parsed, t);
     if (p.kind === 'contact.which') return resolveWhichContact(p, text, t);
     if (p.kind === 'forget.confirm') return resolveForgetConfirm(p, text, t);
@@ -19609,6 +19881,63 @@ try {
     return false;
   }
 
+  /* An interval faster than we can deliver. Say the limit, offer the nearest real thing,
+   * and hold the task so answering "yes" doesn't make her type it again. */
+  function offerFloor(task, rec) {
+    var asked = intervalPhrase(rec) || 'that often';
+    state.pending = { kind: 'reminder.faster', task: task, askedAt: now().getTime() };
+    return reply(
+      'The tightest I can do is ' + MIN_REPEAT_LABEL + ' — anything faster and I can\'t ' +
+      'promise it\'ll actually reach you, because reminders fire from a timer while the ' +
+      'app is open. So ' + asked + ' would be me saying yes to something I can\'t keep. ' +
+      'Want ' + MIN_REPEAT_LABEL + ' instead?',
+      [
+        { label: 'Yes, ' + MIN_REPEAT_LABEL, send: 'yes' },
+        { label: 'Every 30 minutes', send: 'every 30 minutes' },
+        { label: 'Every hour', send: 'every hour' },
+        { label: 'Never mind', send: 'never mind' }
+      ],
+      null, []
+    );
+  }
+
+  function resolveFaster(p, text, parsed, t) {
+    // "yes" -> the floor she was offered.
+    if (/^(y|yes|yeah|yep|yup|sure|ok|okay|fine|please|do it|go on|that works|sounds good)\b/.test(t)) {
+      return createInterval(p.task, flooredRecurrence(), MIN_REPEAT_LABEL);
+    }
+
+    // A different interval offered back ("every 30 minutes") answers the question too.
+    var e = ents(parsed);
+    var rec = e.recurrence || null;
+    if (!rec) {
+      var g = parseWhen(text);
+      if (g && g.recurrence) rec = g.recurrence;
+    }
+    if (rec && rec.subDay) {
+      if (tooTightToPromise(rec)) return offerFloor(p.task, rec);   // still too fast — ask again
+      return createInterval(p.task, rec, intervalPhrase(rec));
+    }
+
+    // Anything else is a normal time answer for the same task.
+    var asTime = resolveReminderTime({ kind: 'reminder.time', task: p.task, askedAt: p.askedAt },
+      text, parsed, t);
+    if (asTime) return asTime;
+    return null;
+  }
+
+  function createInterval(task, rec, phrase) {
+    var due = new Date(now().getTime() + rec.everyMs);
+    due.setSeconds(0, 0);
+    var r = createReminder(task, due, phrase || intervalPhrase(rec) || 'on repeat', rec,
+      { hasTime: true, hasDate: true });
+    rememberReminder(r);
+    return reply(confirmReminder(r),
+      [{ label: 'Show my reminders', send: 'What are my reminders?' },
+      { label: 'Add another', send: 'Remind me to ' }],
+      remCard([r], 'New reminder'), didCreate(r));
+  }
+
   function resolveReminderTime(p, text, parsed, t) {
     if (/no time|whenever|no rush|just remember|someday|doesn'?t matter/.test(t)) {
       var r0 = createReminder(p.task, null, 'no time set', null, { hasTime: false, hasDate: false });
@@ -19633,6 +19962,11 @@ try {
       }
     }
     if (!due && !rec) return null;   // not a time answer — fall through to normal routing
+
+    // A bare interval IS an answer to "when?" — the same way "tonight" is. It used to fall
+    // through to the generic fallback, which told her nothing and left the task stranded.
+    if (tooTightToPromise(rec)) return offerFloor(p.task, rec);
+    if (rec && rec.subDay) return createInterval(p.task, rec, intervalPhrase(rec));
 
     // Long messages are probably a new request, not just a time.
     if (trim(text).split(/\s+/).length > 8 && parsed && parsed.intent && parsed.intent !== 'reminder.create' &&
@@ -20458,6 +20792,15 @@ try {
       if (PB.features && isFn(PB.features.on)) return PB.features.on(name);
     } catch (e) {}
     return true;   // no flags module: behave as before
+  }
+
+  // Reminders are the only thing running. Copy that describes anything else is describing
+  // a build that doesn't exist.
+  function remindersOnly() {
+    try {
+      if (PB.features && isFn(PB.features.remindersOnly)) return PB.features.remindersOnly();
+    } catch (e) {}
+    return false;
   }
 
   // Which feature each intent belongs to. Anything not listed is always available —
